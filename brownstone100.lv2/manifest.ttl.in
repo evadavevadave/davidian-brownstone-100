@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Davidian
+@prefix lv2:  <http://lv2plug.in/ns/lv2core#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix ui:   <http://lv2plug.in/ns/extensions/ui#> .
+
+<urn:davidian:brownstone-100>
+    a lv2:Plugin ;
+    lv2:binary <brownstone100@LIB_EXT@> ;
+    rdfs:seeAlso <brownstone100.ttl> .
+
+# UI-BEGIN (the Makefile removes this block on platforms without a window layer)
+<urn:davidian:brownstone-100>
+    ui:ui <urn:davidian:brownstone-100#ui> .
+
+<urn:davidian:brownstone-100#ui>
+    a @UI_CLASS@ ;
+    ui:binary <brownstone100_ui@LIB_EXT@> ;
+    lv2:requiredFeature ui:parent ;
+    lv2:optionalFeature ui:resize , ui:idleInterface ;
+    lv2:extensionData ui:idleInterface .
+# UI-END
