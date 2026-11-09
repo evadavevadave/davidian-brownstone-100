@@ -168,6 +168,8 @@ static void bq_peak(Biquad* q, double fc, double Q, double gain_db, double fs)
     q->a2 = (1.0 - a / A) / a0;
 }
 
+#include "cabinet.h"
+
 /* ---------------------------------------------------- 12AX7 (Koren model) */
 /* Koren's triode equation and published 12AX7 parameters [1]. */
 
@@ -515,7 +517,7 @@ typedef struct {
     PowerAmp pa;
 
     /* cabinet */
-    Biquad cab[6];
+    CabSim cab;
 
     /* smoothed controls */
     double sm_pre, sm_post, sm_attn, sm_out, sm_in;
@@ -612,13 +614,8 @@ static LV2_Handle instantiate(const LV2_Descriptor* desc, double rate,
     op_set(&s->pa.pres_lp, 1500.0, fso);
     set_feedback(s, 0.5, 0.5);
 
-    /* Cabinet (4x12 closed back, approximate) at base rate */
-    bq_highpass(&s->cab[0], 75.0, 0.8, rate);
-    bq_peak(&s->cab[1], 115.0, 1.4, 4.0, rate);
-    bq_peak(&s->cab[2], 650.0, 1.0, -4.0, rate);
-    bq_peak(&s->cab[3], 2600.0, 1.3, 4.5, rate);
-    bq_lowpass(&s->cab[4], fmin(5200.0, 0.45 * rate), 0.6, rate);
-    bq_lowpass(&s->cab[5], fmin(7000.0, 0.45 * rate), 0.707, rate);
+    /* Cabinet simulation at base rate; run() selects the model from the ports. */
+    cab_init(&s->cab, rate, 0);
 
     s->sm_coef = 1.0 - exp(-1.0 / (0.015 * rate));
     s->channel = -1;
@@ -643,7 +640,7 @@ static void reset_state(Brownstone* s)
         s->up[k].z1 = s->up[k].z2 = 0.0;
         s->down[k].z1 = s->down[k].z2 = 0.0;
     }
-    for (int k = 0; k < 6; ++k) s->cab[k].z1 = s->cab[k].z2 = 0.0;
+    cab_reset(&s->cab);
     Triode* tr[] = { &s->v1a, &s->v1b, &s->v2a, &s->v2b, &s->v5b, &s->v5a, &s->v3a };
     for (int k = 0; k < 7; ++k) tr[k]->cath.s = tr[k]->miller.s = 0.0;
     OnePole* op[] = { &s->in_hp, &s->lead_shelf, &s->rhy_shelf, &s->rhy_bright,
@@ -750,6 +747,8 @@ static void run(LV2_Handle h, uint32_t n)
                      * (port_val(s, P_INPUT_LOW, 0.0) > 0.5 ? 0.5 : 1.0);
     double out_t     = pow(10.0, clampd(port_val(s, P_OUT_LEVEL, 0.0), -60.0, 12.0) / 20.0);
     int    cab       = port_val(s, P_CAB, 1.0) > 0.5;
+    int    cab_model = (int)lrint(clampd(port_val(s, P_CAB_MODEL, 0.0), 0.0, CAB_MODELS - 1));
+    cab_select(&s->cab, cab ? cab_model : CAB_OFF);
 
     if (!s->ts.valid) {
         s->sm_pre = pre_t; s->sm_post = post_t; s->sm_attn = attn_t;
@@ -805,11 +804,7 @@ static void run(LV2_Handle h, uint32_t n)
             if (o == OS - 1) acc = y;
         }
 
-        double y = acc * 0.35;
-        if (cab) {
-            for (int k = 0; k < 6; ++k) y = bq_run(&s->cab[k], y);
-        }
-        y *= s->sm_out;
+        double y = cab_run(&s->cab, acc * 0.35) * s->sm_out;
         if (!(y == y)) { reset_state(s); y = 0.0; } /* NaN guard */
         out[i] = (float)y;
     }

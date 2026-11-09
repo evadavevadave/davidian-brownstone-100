@@ -25,6 +25,7 @@ typedef enum {
     P_CAB,
     P_IN_TRIM,
     P_OUT_LEVEL,
+    P_CAB_MODEL,    /* 0 4x12 Modern, 1 4x12 Vintage, 2 2x12 Open, 3 1x12 Combo */
     P_COUNT
 } PortIndex;
 

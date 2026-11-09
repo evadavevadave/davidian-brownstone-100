@@ -127,6 +127,73 @@ int main(void)
     }
     write_wav("test_input_di.wav", in, N);
 
+    /* Cabinet models: each one renders cleanly and is loudness-matched to the others. */
+    {
+        static const char* names[CAB_MODELS] = { "4x12_modern", "4x12_vintage", "2x12_open", "1x12_combo" };
+        double ref_db = 0;
+        for (int m = 0; m < CAB_MODELS; ++m) {
+            float ctl[P_COUNT] = { 0 };
+            ctl[P_CHANNEL] = 2; ctl[P_LEAD_PRE] = 7; ctl[P_LEAD_POST] = 3;
+            ctl[P_LOW] = 5; ctl[P_MID] = 5; ctl[P_HIGH] = 6; ctl[P_PRESENCE] = 5; ctl[P_RESONANCE] = 5;
+            ctl[P_CAB] = 1; ctl[P_CAB_MODEL] = (float)m;
+            LV2_Handle h = d->instantiate(d, SR, "", NULL);
+            d->connect_port(h, P_IN, in); d->connect_port(h, P_OUT, out);
+            for (int p = 2; p < P_COUNT; ++p) d->connect_port(h, p, &ctl[p]);
+            d->activate(h);
+            d->run(h, N);
+            double sum = 0, peak = 0; int bad = 0;
+            for (int i = 0; i < N; ++i) {
+                if (!isfinite(out[i])) bad = 1;
+                sum += (double)out[i] * out[i];
+                peak = fmax(peak, fabs(out[i]));
+            }
+            double db = 10 * log10(sum / N + 1e-24);
+            if (m == 0) ref_db = db;
+            int level_ok = fabs(db - ref_db) < 4.0;
+            printf("cab %-13s rms %6.1f dBFS (%+.1f dB vs modern)  peak %.3f  %s\n", names[m], db,
+                   db - ref_db, peak, bad ? "NaN/INF!" : (level_ok ? "ok" : "LEVEL MISMATCH"));
+            if (bad || !level_ok || peak > 4.0) fail = 1;
+            char path[128];
+            snprintf(path, sizeof path, "test_cab_%s.wav", names[m]);
+            write_wav(path, out, N);
+            d->cleanup(h);
+        }
+    }
+
+    /* Switching models and the cab on/off must crossfade, not click: drive the cabinet
+     * directly with a 1 kHz sine and check no step is larger than the sine's own slope. */
+    {
+        const double rates[] = { 44100.0, 48000.0, 96000.0, 192000.0 };
+        for (size_t r = 0; r < sizeof rates / sizeof rates[0]; ++r) {
+            const double fs = rates[r];
+            const int len = (int)(fs * 2.0);
+            CabSim cab;
+            double max_step = 0, max_amp = 0;
+            int bad = 0;
+            cab_init(&cab, fs, 0);
+            for (int i = 0; i < len; ++i) {
+                double x = 0.3 * sin(2 * M_PI * 1000.0 * i / fs);
+                /* every 100 ms: next model, and every fifth change bypass the cabinet */
+                if (i % (int)(fs * 0.1) == 0) {
+                    int k = i / (int)(fs * 0.1);
+                    cab_select(&cab, k % 5 == 4 ? CAB_OFF : k % CAB_MODELS);
+                }
+                double y = cab_run(&cab, x);
+                static double prev;
+                if (!isfinite(y)) bad = 1;
+                if (i > 0) max_step = fmax(max_step, fabs(y - prev));
+                max_amp = fmax(max_amp, fabs(y));
+                prev = y;
+            }
+            /* a sine of amplitude A changes by at most A * 2 pi f / fs per sample */
+            double limit = 1.5 * max_amp * 2 * M_PI * 1000.0 / fs;
+            int ok = !bad && max_step <= limit;
+            printf("cab switching at %6.0f Hz: max step %.4f (limit %.4f)  %s\n", fs, max_step, limit,
+                   ok ? "ok" : "CLICK");
+            if (!ok) fail = 1;
+        }
+    }
+
     /* Silence must stay silent (no self-oscillation in the NFB loop). */
     {
         float ctl[P_COUNT] = { 0 };

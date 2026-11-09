@@ -22,7 +22,12 @@
 #define PANEL_NAME     "BROWNSTONE 100"
 #define PANEL_SUBTITLE "TWO-CHANNEL 100 WATT VALVE AMPLIFIER - FIVE 12AX7 GAIN STAGES - 6L6 POWER"
 
-enum { W_KNOB, W_TRIM, W_SWITCH, W_FOOT };
+/* W_SELECT: a stepped rotary selector whose pointer aims at the chosen name in a list. */
+enum { W_KNOB, W_TRIM, W_SWITCH, W_FOOT, W_SELECT };
+
+#define MAX_OPTS 4
+#define SEL_LIST_DX 32.0f /* list starts this far right of the selector's centre */
+#define SEL_ROW     20.0f /* list row spacing */
 
 typedef struct {
     int kind, port;
@@ -32,7 +37,7 @@ typedef struct {
     const char* name;  /* in the display */
     const char* lo;    /* scale end labels */
     const char* hi;
-    const char* opts[3];
+    const char* opts[MAX_OPTS];
     int nopts;
 } Widget;
 
@@ -44,13 +49,15 @@ static const Widget WIDGETS[] = {
     { W_KNOB, P_LOW, 621, 150, 30, 0, 10, 5, "LOW", "LOW", "0", "10", {0}, 0 },
     { W_KNOB, P_MID, 750, 150, 30, 0, 10, 5, "MID", "MID", "0", "10", {0}, 0 },
     { W_KNOB, P_HIGH, 879, 150, 30, 0, 10, 5, "HIGH", "HIGH", "0", "10", {0}, 0 },
-    { W_SWITCH, P_INPUT_LOW, 56, 376, 0, 0, 1, 0, "JACK", "INPUT JACK", 0, 0, { "HIGH", "LOW -6" }, 2 },
-    { W_TRIM, P_IN_TRIM, 156, 372, 17, -24, 24, 0, "TRIM", "INPUT TRIM", 0, 0, {0}, 0 },
-    { W_SWITCH, P_CHANNEL, 280, 376, 0, 0, 2, 2, "SELECT", "CHANNEL", 0, 0, { "RHYTHM", "CRUNCH", "LEAD" }, 3 },
-    { W_FOOT, P_CAB, 486, 386, 25, 0, 1, 1, "CABINET", "CABINET SIM", 0, 0, { "OFF", "ON" }, 2 },
-    { W_KNOB, P_PRESENCE, 633, 364, 26, 0, 10, 5, "PRESENCE", "PRESENCE", "0", "10", {0}, 0 },
-    { W_KNOB, P_RESONANCE, 731, 364, 26, 0, 10, 5, "RESONANCE", "RESONANCE", "0", "10", {0}, 0 },
-    { W_TRIM, P_OUT_LEVEL, 870, 372, 17, -60, 12, 0, "LEVEL", "OUTPUT LEVEL", 0, 0, {0}, 0 },
+    { W_SWITCH, P_INPUT_LOW, 50, 376, 0, 0, 1, 0, "JACK", "INPUT JACK", 0, 0, { "HIGH", "LOW -6" }, 2 },
+    { W_TRIM, P_IN_TRIM, 141, 372, 17, -24, 24, 0, "TRIM", "INPUT TRIM", 0, 0, {0}, 0 },
+    { W_SWITCH, P_CHANNEL, 230, 376, 0, 0, 2, 2, "SELECT", "CHANNEL", 0, 0, { "RHYTHM", "CRUNCH", "LEAD" }, 3 },
+    { W_FOOT, P_CAB, 398, 386, 25, 0, 1, 1, "CAB SIM", "CABINET SIM", 0, 0, { "OFF", "ON" }, 2 },
+    { W_SELECT, P_CAB_MODEL, 482, 372, 19, 0, 3, 0, "MODEL", "CABINET MODEL", 0, 0,
+      { "4X12 MODERN", "4X12 VINTAGE", "2X12 OPEN", "1X12 COMBO" }, 4 },
+    { W_KNOB, P_PRESENCE, 676, 364, 26, 0, 10, 5, "PRESENCE", "PRESENCE", "0", "10", {0}, 0 },
+    { W_KNOB, P_RESONANCE, 768, 364, 26, 0, 10, 5, "RESONANCE", "RESONANCE", "0", "10", {0}, 0 },
+    { W_TRIM, P_OUT_LEVEL, 885, 372, 17, -60, 12, 0, "LEVEL", "OUTPUT LEVEL", 0, 0, {0}, 0 },
 };
 #define N_WIDGETS ((int)(sizeof WIDGETS / sizeof WIDGETS[0]))
 
@@ -92,12 +99,24 @@ static int w_index(const Panel* p, const Widget* w)
     return i < 0 ? 0 : (i >= n ? n - 1 : i);
 }
 
+/* Selector geometry: list row i and the pointer angle that aims at it. */
+static float sel_row_y(const Widget* w, int i)
+{
+    return w->y + SEL_ROW * (i - 0.5f * (w->nopts - 1));
+}
+
+static float sel_angle(const Widget* w, int i)
+{
+    return atan2f(SEL_LIST_DX - 6.0f, -(sel_row_y(w, i) - w->y));
+}
+
 static void w_format(const Panel* p, const Widget* w, char* buf, size_t n)
 {
     const float v = p->val[w->port];
     switch (w->kind) {
     case W_SWITCH:
     case W_FOOT:
+    case W_SELECT:
         snprintf(buf, n, "%s", w->opts[w_index(p, w)]);
         break;
     default:
@@ -173,6 +192,18 @@ static void draw_foot_static(Canvas* c, const Widget* w)
     cv_ring(c, w->x, w->y - w->r - 26, 7.5f, 1.5f, 0x8a8e96, 0.8f);
 }
 
+static void draw_select_static(Canvas* c, const Widget* w)
+{
+    int i;
+    /* Detent marks, one per position, each aiming at its name. */
+    for (i = 0; i < w->nopts; ++i) {
+        const float a = sel_angle(w, i);
+        cv_line(c, cv_ax(w->x, w->r + 5.0f, a), cv_ay(w->y, w->r + 5.0f, a), cv_ax(w->x, w->r + 10.0f, a),
+                cv_ay(w->y, w->r + 10.0f, a), 1.3f, COL_INK, 0.8f);
+    }
+    text_center(c, w->x, w->y + w->r + 14.0f, w->label, 8, 2.0f, 1.4f, COL_INK, 1);
+}
+
 static void draw_background(Panel* p)
 {
     Canvas c;
@@ -201,10 +232,11 @@ static void draw_background(Panel* p)
     draw_section(&c, 16, 76, 276, 246, "RHYTHM");
     draw_section(&c, 286, 76, 546, 246, "LEAD");
     draw_section(&c, 556, 76, 944, 246, "TONE");
-    draw_section(&c, 16, 266, 206, 456, "INPUT");
-    draw_section(&c, 216, 266, 396, 456, "CHANNEL");
-    draw_section(&c, 576, 266, 786, 456, "POWER AMP");
-    draw_section(&c, 796, 266, 944, 456, "OUTPUT");
+    draw_section(&c, 16, 266, 176, 456, "INPUT");
+    draw_section(&c, 186, 266, 336, 456, "CHANNEL");
+    draw_section(&c, 346, 266, 616, 456, "CABINET");
+    draw_section(&c, 626, 266, 816, 456, "POWER AMP");
+    draw_section(&c, 826, 266, 944, 456, "OUTPUT");
 
     for (i = 0; i < N_WIDGETS; ++i) {
         const Widget* w = &WIDGETS[i];
@@ -213,6 +245,7 @@ static void draw_background(Panel* p)
         case W_TRIM: draw_knob_scale(&c, w); break;
         case W_SWITCH: draw_switch_static(&c, w); break;
         case W_FOOT: draw_foot_static(&c, w); break;
+        case W_SELECT: draw_select_static(&c, w); break;
         }
     }
 
@@ -266,6 +299,31 @@ static void draw_switch(Canvas* c, const Widget* w, int idx)
     cv_shaded_circle(c, x, ey, 4.8f, 0xf4f5f7, 0x7c7f86, -0.35f, -0.45f, 1);
 }
 
+static void draw_select(Canvas* c, const Widget* w, int idx, int active)
+{
+    const float r = w->r, x = w->x, y = w->y;
+    const float ang = sel_angle(w, idx);
+    int i;
+    for (i = 0; i < w->nopts; ++i)
+        text_draw(c, x + SEL_LIST_DX, sel_row_y(w, i) - 3.5f, w->opts[i], TXT_SMALL, 1.6f, 1.25f,
+                  i == idx ? COL_AMBER : COL_DIM, 1);
+    /* Lit detent mark for the chosen position. */
+    cv_line(c, cv_ax(x, r + 5.0f, ang), cv_ay(y, r + 5.0f, ang), cv_ax(x, r + 10.0f, ang),
+            cv_ay(y, r + 10.0f, ang), 2.2f, active ? 0xffd27f : COL_AMBER, 1);
+    /* Black knurled knob, same finish as the others. */
+    cv_circle(c, x + 2, y + 4, r + 1, 0x000000, 0.5f);
+    cv_shaded_circle(c, x, y, r, COL_KNOB_LIGHT, COL_KNOB_DARK, -0.45f, -0.65f, 1);
+    for (i = 0; i < 20; ++i) {
+        const float a = ang + 2.0f * CV_PI * i / 20;
+        cv_line(c, cv_ax(x, r * 0.84f, a), cv_ay(y, r * 0.84f, a), cv_ax(x, r * 0.98f, a),
+                cv_ay(y, r * 0.98f, a), 1.2f, 0x000000, 0.55f);
+    }
+    cv_shaded_circle(c, x, y, r * 0.74f, 0x3c3e44, 0x18191c, -0.35f, -0.55f, 1);
+    cv_ring(c, x, y, r * 0.74f, 1.0f, 0x6a6d74, 0.5f);
+    cv_line(c, cv_ax(x, r * 0.2f, ang), cv_ay(y, r * 0.2f, ang), cv_ax(x, r * 0.93f, ang),
+            cv_ay(y, r * 0.93f, ang), 2.2f, COL_INK, 1);
+}
+
 static void draw_foot(Canvas* c, const Widget* w, int on)
 {
     const float lx = w->x, ly = w->y - w->r - 26;
@@ -305,6 +363,7 @@ static void panel_draw(Panel* p)
         case W_TRIM: draw_knob(&p->c, w, w_norm(w, p->val[w->port]), p->drag == i); break;
         case W_SWITCH: draw_switch(&p->c, w, w_index(p, w)); break;
         case W_FOOT: draw_foot(&p->c, w, w_index(p, w)); break;
+        case W_SELECT: draw_select(&p->c, w, w_index(p, w), p->drag == i); break;
         }
     }
     draw_display(p);
@@ -359,7 +418,7 @@ static void panel_set(Panel* p, int port, float v)
 static void set_value(Panel* p, int wi, float v)
 {
     const Widget* w = &WIDGETS[wi];
-    if (w->kind == W_SWITCH || w->kind == W_FOOT)
+    if (w->kind == W_SWITCH || w->kind == W_FOOT || w->kind == W_SELECT)
         v = floorf(v + 0.5f);
     if (v < w->min) v = w->min;
     if (v > w->max) v = w->max;
@@ -389,8 +448,27 @@ static int hit(float x, float y)
             if (dx >= -14 && dx <= 62 && dy >= -30 && dy <= 30)
                 return i;
             break;
+        case W_SELECT:
+            if (dx * dx + dy * dy <= (w->r + 10) * (w->r + 10))
+                return i;
+            if (dx >= SEL_LIST_DX - 4 && dx <= SEL_LIST_DX + 90 &&
+                fabsf(dy) <= SEL_ROW * 0.5f * w->nopts)
+                return i;
+            break;
         }
     }
+    return -1;
+}
+
+/* The list row under y, or -1 when y is outside the list. */
+static int sel_row_at(const Widget* w, float x, float y)
+{
+    int i;
+    if (x - w->x < SEL_LIST_DX - 4)
+        return -1;
+    for (i = 0; i < w->nopts; ++i)
+        if (fabsf(y - sel_row_y(w, i)) <= 0.5f * SEL_ROW)
+            return i;
     return -1;
 }
 
@@ -428,6 +506,24 @@ static void panel_mouse_down(Panel* p, float x, float y, int dbl)
     case W_FOOT:
         set_value(p, i, w_index(p, w) ? 0.0f : 1.0f);
         break;
+    case W_SELECT: {
+        /* Click a name to pick it; on the knob, drag up/down to step. */
+        const int row = sel_row_at(w, x, y);
+        if (row >= 0) {
+            set_value(p, i, (float)row);
+            return;
+        }
+        if (dbl) {
+            set_value(p, i, w->def);
+            return;
+        }
+        p->drag = i;
+        p->drag_y = y;
+        p->drag_norm = (float)w_index(p, w);
+        p->shown = i;
+        p->dirty = 1;
+        break;
+    }
     }
 }
 
@@ -438,6 +534,11 @@ static void panel_mouse_move(Panel* p, float x, float y, int fine)
     if (p->drag < 0)
         return;
     w = &WIDGETS[p->drag];
+    if (w->kind == W_SELECT) {
+        /* One step per 24 px from where the drag started; dragging down moves down the list. */
+        set_value(p, p->drag, p->drag_norm + floorf((y - p->drag_y) / 24.0f + 0.5f));
+        return;
+    }
     {
         const float n = p->drag_norm + (p->drag_y - y) / (fine ? 900.0f : 180.0f);
         /* Fine mode needs a fresh reference so switching modes mid-drag doesn't jump. */
@@ -461,7 +562,7 @@ static void panel_wheel(Panel* p, float x, float y, float steps, int fine)
     if (i < 0)
         return;
     w = &WIDGETS[i];
-    if (w->kind == W_SWITCH) {
+    if (w->kind == W_SWITCH || w->kind == W_SELECT) {
         int n = w_index(p, w) - (steps > 0 ? 1 : -1);
         set_value(p, i, (float)(n < 0 ? 0 : (n >= w->nopts ? w->nopts - 1 : n)));
     } else if (w->kind != W_FOOT) {

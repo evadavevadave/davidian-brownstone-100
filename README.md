@@ -1,19 +1,44 @@
 # Davidian Brownstone 100 — LV2 amp plugin
 
-This is a mono Davidian LV2 guitar amp simulation of a classic late-1990s high-gain 120 W valve head, modeled stage by stage from its circuit. Plugin URI: `urn:davidian:brownstone-100`.
+This is a mono Davidian LV2 guitar amp simulation of a classic late-1990s high-gain 120 W valve head, modeled stage by stage from its circuit. It includes a speaker cabinet simulation with four cabinet models, and a native GUI on Windows, macOS and Linux. Plugin URI: `urn:davidian:brownstone-100`.
 
-## Build
+## Download
 
-**Windows (MSVC):** run `build.bat`, or `build.bat test` to also run the offline tests. The script sets up the Visual Studio environment itself.
-**Linux / macOS / MinGW:** run `make`, then `make test` and `make install` (installs to `~/.lv2`).
+Ready-made builds are on the [Releases page](https://github.com/evadavevadave/davidian-brownstone-100/releases):
 
-The output is the bundle `build/brownstone100.lv2/`. Copy it into an LV2 folder:
+| Zip | For |
+|---|---|
+| `…-windows-x64.zip` | Windows 10/11, 64-bit hosts |
+| `…-macos-universal.zip` | macOS 10.13 or later, Apple silicon and Intel |
+| `…-linux-x64.zip` | 64-bit Intel/AMD Linux (glibc 2.35 or later) |
+| `…-linux-arm64.zip` | 64-bit ARM Linux, such as a Raspberry Pi 4 or 5 (glibc 2.35 or later) |
 
-- Windows: `%APPDATA%\LV2` or `%COMMONPROGRAMFILES%\LV2`
-- Linux: `~/.lv2`
+Unzip it, copy the `brownstone100.lv2` folder into your LV2 folder, and restart your host:
+
+- Windows: `%APPDATA%\LV2` (create it if it doesn't exist) or `%COMMONPROGRAMFILES%\LV2`
 - macOS: `~/Library/Audio/Plug-Ins/LV2`
+- Linux: `~/.lv2`
+
+The plugin isn't notarized by Apple, so macOS may block the downloaded files. After copying, run this once in Terminal:
+
+```bash
+xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/LV2/brownstone100.lv2
+```
 
 The plugin works in hosts that load LV2 plugins, such as Reaper, Ardour, Carla and Qtractor.
+
+## Build from source
+
+The code is plain C99, with a small Objective-C window layer on macOS. It needs no LV2 SDK and no libraries beyond the system's own.
+
+- **Windows (Visual Studio):** run `build.bat`. `build.bat test` also runs the tests, and `build.bat dist` makes a zip. The script sets up the Visual Studio environment itself.
+- **Linux, macOS, BSD or MinGW:** run `make`. `make test` runs the offline tests, `make install` copies the bundle to your per-user LV2 folder, and `make dist` makes a zip.
+  - Linux needs a C compiler and the X11 development headers (`sudo apt install build-essential libx11-dev` on Debian or Ubuntu).
+  - macOS needs the Xcode command-line tools. `make` builds a universal binary for Apple silicon and Intel.
+
+The bundle is built in `build/brownstone100.lv2/`.
+
+Every push is built and tested on Windows, macOS and Linux (x64 and ARM) by GitHub Actions (`.github/workflows/build.yml`). Pushing a version tag such as `v1.0.0` publishes the four zips as a release.
 
 ## GUI
 
@@ -23,10 +48,11 @@ The panel is called **Brownstone 100**. It uses the house GUI style (graphite pa
 
 - **Knobs:** drag up or down. Hold Shift for fine control, use the mouse wheel for small steps, and double-click to reset.
 - **Toggle switches:** click the position you want.
-- **Cabinet footswitch:** turns the cabinet sim on or off.
+- **Cab Sim footswitch:** turns the cabinet simulation on or off. The red LED is lit when it's on.
+- **Cabinet model selector:** click a cabinet's name, or drag the knob up or down. Its pointer aims at the chosen name.
 - **Readout:** the window at the top right shows the control you last touched.
 
-The GUI is a native window with its own software renderer, so it needs no graphics libraries. It uses `ui:WindowsUI` on Windows and `ui:X11UI` on Linux. macOS builds include the plugin without a GUI.
+The GUI draws itself with its own software renderer, so it needs no graphics libraries. It opens a native window: `ui:WindowsUI` on Windows, `ui:CocoaUI` on macOS and `ui:X11UI` on Linux.
 
 ## Controls
 
@@ -37,8 +63,20 @@ The GUI is a native window with its own software renderer, so it needs no graphi
 | Low / Mid / High | FMV tone stack: 1M / 50k / 250k, 47k slope, 470p / 22n / 22n |
 | Presence / Resonance | Reduce high- or low-frequency negative feedback in the power amp |
 | Low Input | J39 input (−6 dB) |
-| Cabinet Sim | An approximate 4x12 speaker filter. Turn it off to use your own impulse response |
+| Cabinet Sim | Turns the speaker cabinet simulation on or off. Turn it off to use your own impulse response |
+| Cabinet Model | 4x12 Modern, 4x12 Vintage, 2x12 Open Back or 1x12 Combo (see below) |
 | Input Trim / Output | 0 dBFS at the input counts as 1 V peak at the guitar jack |
+
+## Cabinet models
+
+| Model | Character |
+|---|---|
+| 4x12 Modern | Closed back. Tight low end, scooped low mids, forward upper mids. This is the voicing from before the selector existed, so older sessions sound the same |
+| 4x12 Vintage | Closed back. Darker and smoother on top, mid-forward, like lower-power vintage-style speakers |
+| 2x12 Open Back | Less low-end thump, a cancellation dip in the low mids, more air |
+| 1x12 Combo | Small open-back box. Tight bass, boxy low mids, bright upper mids |
+
+Each model is a cascade of seven filters (high-pass, resonance and presence peaks, low-pass roll-off) in `src/cabinet.h`. The models are generic voicings, not measurements of any particular cabinet or speaker. They are loudness-matched to each other, so switching changes the tone, not the level. Switching models, or turning the cab on or off, crossfades over 20 ms so it doesn't click.
 
 ## What is modeled
 
@@ -65,22 +103,27 @@ The GUI is a native window with its own software renderer, so it needs no graphi
 - These parts are behavioral models, not a component-level circuit solution:
   - The power section, which has no sag
   - The phase inverter
-  - The cabinet filter
+  - The cabinet models
 - The Pre/Post pots use a steep audio taper (the pots are marked "A3"). The rhythm-channel levels were tuned so the channel stays clean at Pre ≈ 1–2 and breaks up from about 4–5.
 
 ## Files
 
 - `src/brownstone100.c`: the DSP code and LV2 entry point
+- `src/cabinet.h`: the cabinet models and their crossfade
 - `src/ports.h`: port indices and URIs shared by the plugin and the GUI
 - `src/lv2_core.h`: minimal LV2 ABI. Build with `-DHAVE_LV2` to use the system headers instead
 - `src/ui/`: the GUI
   - `panel.h`: layout, drawing and mouse handling
-  - `ui_lv2.c`: LV2 UI entry points and the Win32/X11 window layer
+  - `ui_lv2.c`: LV2 UI entry points and the Win32, Cocoa and X11 window layers
   - `style.h`, `font.h`, `canvas.h`: the house style
 - `brownstone100.lv2/`: the TTL metadata
-- `test/render.c`: offline DSP test. It renders a synthetic power-chord DI through each channel, checks for NaN and feedback-loop stability, and writes `build-test/test_*.wav`
+- `Makefile`, `build.bat`: builds for Linux/macOS/MinGW and for Visual Studio
+- `.github/workflows/build.yml`: builds, tests and releases on all three platforms
+- `test/render.c`: offline DSP test. It renders a synthetic power-chord DI through each channel and each cabinet model, checks for NaN, feedback-loop stability, cabinet loudness matching and click-free cabinet switching, and writes `build-test/test_*.wav`
 - `test/ui_render.c`: renders the panel to a BMP without opening a window
-- `test/ui_check.c`: loads `brownstone100_ui.dll` the way a Windows host does, clicks and drags the controls, and checks the values sent back (Windows only)
+- `test/ui_check.c`: loads the GUI the way a Windows host does, clicks and drags the controls, and checks the values sent back (Windows)
+- `test/ui_check_mac.m`: the same for the Cocoa GUI, and also checks the panel is drawn the right way up (macOS)
+- `test/load_check.c`: loads the plugin and GUI with `dlopen`, runs audio through the plugin, and opens the X11 GUI on a virtual display (Linux, macOS)
 - `LICENSE`: GPL-3.0 text. `LICENSE-LV2`: the ISC notice for the re-declared LV2 interface
 
 ## References
@@ -95,19 +138,21 @@ The model re-implements equations from these published works. No code was copied
 
 ## Use of AI
 
-This project was made with AI assistance. The code, tests, LV2 metadata, build scripts and this README were written by Claude (Anthropic's Claude Opus 5.5, through Claude Code), directed and reviewed by the author.
+This project was made with AI assistance. The code, tests, LV2 metadata, build scripts, release workflow and this README were written by Claude (Anthropic's Claude Opus 5.5, through Claude Code), directed and reviewed by the author.
 
 - **The author** supplied the circuit, the GUI house style, the names and the licensing choices. They also decided what to build and changed parts of the result themselves, including renaming the project to Brownstone 100.
 - **The AI**:
   - read component values and topology from the circuit and chose which parts to simplify (see [Approximations](#approximations))
   - wrote the DSP model and set the rhythm-channel and pot-taper calibration
-  - adapted the house-style GUI to this panel
-  - wrote the test programs and documentation
-- **Checking:** the results are checked by the automated tests in `test/`:
+  - designed the four cabinet voicings
+  - adapted the house-style GUI to this panel and wrote the macOS window layer
+  - wrote the test programs, the cross-platform build and release workflow, and the documentation
+- **Checking:** the results are checked by the automated tests in `test/`, which GitHub Actions runs on Windows, macOS and Linux:
   - numerical stability of the DSP, levels and speed
-  - harmonic content per channel
-  - the GUI loaded and driven by simulated mouse input
-- **Not checked:** the sound hasn't been compared with a real amplifier. The calibrated values (channel attenuations, pot tapers, cabinet filter, power-amp constants) are the AI's estimates. They should be tuned by ear.
+  - cabinet loudness matching and click-free switching at 44.1 to 192 kHz
+  - each GUI loaded and driven by simulated mouse input (Windows, macOS), or opened on a virtual display (Linux)
+  - the bundle read and run by the reference LV2 host library, lilv (Linux)
+- **Not checked:** the sound hasn't been compared with a real amplifier or cabinet. The calibrated values (channel attenuations, pot tapers, cabinet voicings, power-amp constants) are the AI's estimates. They should be tuned by ear. The macOS and Linux builds haven't been tried in a real host by the author.
 
 ## License
 
@@ -119,9 +164,12 @@ This program is free software: you can redistribute it and/or modify it under th
 
 | Component | Licence | How it's used |
 |---|---|---|
-| LV2 C interface (`lv2/core/lv2.h`, `lv2/ui/ui.h`) | ISC | Its declarations are re-stated in `src/lv2_core.h`, the UI ABI block of `src/ui/ui_lv2.c` and `test/ui_check.c`, so no LV2 SDK is needed. Copyright and permission notice in [LICENSE-LV2](LICENSE-LV2). |
+| LV2 C interface (`lv2/core/lv2.h`, `lv2/ui/ui.h`) | ISC | Its declarations are re-stated in `src/lv2_core.h`, the UI ABI block of `src/ui/ui_lv2.c` and the test programs, so no LV2 SDK is needed. Copyright and permission notice in [LICENSE-LV2](LICENSE-LV2). |
 | LV2 vocabularies (`lv2core`, `ui`, `units`, `port-props`) | ISC | The `.ttl` files refer to them by URI. Nothing is copied. |
-| Microsoft C runtime | Visual Studio licence | `build.bat` links it statically (`/MT`) into the DLLs you build. It counts as a system library under the GPL, so this is allowed. No binaries are committed to this repository. |
+| Microsoft C runtime | Visual Studio licence | `build.bat` links it statically (`/MT`) into the Windows DLLs. It counts as a system library under the GPL, so this is allowed. |
+| Xlib (Linux) | MIT/X11 | The Linux GUI links to the system's `libX11` at run time. Not included in the release zips. |
+| Cocoa (macOS) | Apple system framework | The macOS GUI links to it at run time, as a system library. Not included. |
+| lilv, Xvfb, GitHub Actions | Various | Used only to test and build on GitHub's machines. Nothing from them is included. |
 
 Every source file starts with an SPDX licence line saying which of these applies.
 

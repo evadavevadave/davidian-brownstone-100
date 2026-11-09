@@ -9,14 +9,12 @@
     lv2:binary <brownstone100@LIB_EXT@> ;
     rdfs:seeAlso <brownstone100.ttl> .
 
-# UI-BEGIN (the Makefile removes this block on platforms without a window layer)
+# @UI_CLASS@ is ui:WindowsUI, ui:X11UI or ui:CocoaUI, filled in by the build.
 <urn:davidian:brownstone-100>
     ui:ui <urn:davidian:brownstone-100#ui> .
 
 <urn:davidian:brownstone-100#ui>
     a @UI_CLASS@ ;
     ui:binary <brownstone100_ui@LIB_EXT@> ;
-    lv2:requiredFeature ui:parent ;
-    lv2:optionalFeature ui:resize , ui:idleInterface ;
+    lv2:optionalFeature ui:parent , ui:resize , ui:idleInterface ;
     lv2:extensionData ui:idleInterface .
-# UI-END

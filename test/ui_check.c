@@ -165,7 +165,7 @@ int main(int argc, char** argv)
 
     /* The host sends every control port's value first (the TTL defaults). */
     {
-        static const float vals[P_COUNT] = { 0, 0, 2, 0, 3, 4, 6, 3, 5, 5, 5, 5, 5, 1, 0, 0 };
+        static const float vals[P_COUNT] = { 0, 0, 2, 0, 3, 4, 6, 3, 5, 5, 5, 5, 5, 1, 0, 0, 0 };
         for (i = P_CHANNEL; i < P_COUNT; ++i)
             d->port_event(ui, (uint32_t)i, sizeof(float), 0, &vals[i]);
     }
@@ -186,21 +186,38 @@ int main(int argc, char** argv)
     snprintf(label, sizeof label, "double-click resets Rhythm Post to %.2f", last_value);
     check(label, last_port == P_RHY_POST && fabsf(last_value - 4.0f) < 1e-4f);
 
-    click(child, 280, 376 - 18);
+    click(child, 230, 376 - 18);
     check("top of the channel switch selects Rhythm", last_port == P_CHANNEL && last_value == 0.0f);
-    click(child, 280, 376);
+    click(child, 230, 376);
     check("middle of the channel switch selects Crunch", last_port == P_CHANNEL && last_value == 1.0f);
-    click(child, 280, 376 + 18);
+    click(child, 230, 376 + 18);
     check("bottom of the channel switch selects Lead", last_port == P_CHANNEL && last_value == 2.0f);
-    click(child, 56, 376 + 18);
+    click(child, 50, 376 + 18);
     check("input switch selects the low jack", last_port == P_INPUT_LOW && last_value == 1.0f);
-    click(child, 486, 386);
+    click(child, 398, 386);
     check("cabinet footswitch turns the cab sim off", last_port == P_CAB && last_value == 0.0f);
 
-    drag(child, 870, 372, 18);
+    /* Cabinet model selector at (482, 372); its names are listed at y = 342, 362, 382, 402. */
+    click(child, 540, 382);
+    check("clicking \"2X12 OPEN\" selects cabinet model 2", last_port == P_CAB_MODEL && last_value == 2.0f);
+    click(child, 540, 342);
+    check("clicking \"4X12 MODERN\" selects cabinet model 0", last_port == P_CAB_MODEL && last_value == 0.0f);
+    drag(child, 482, 372, 50);
+    snprintf(label, sizeof label, "dragging the selector down two steps sends model %.0f", last_value);
+    check(label, last_port == P_CAB_MODEL && last_value == 2.0f);
+    drag(child, 482, 372, 200);
+    check("dragging the selector far down stops at the last model", last_port == P_CAB_MODEL && last_value == 3.0f);
+    {
+        POINT pt = { 482, 372 };
+        ClientToScreen(child, &pt);
+        SendMessageA(child, WM_MOUSEWHEEL, MAKEWPARAM(0, WHEEL_DELTA), MAKELPARAM(pt.x, pt.y));
+        check("mouse wheel up on the selector steps back to model 2", last_port == P_CAB_MODEL && last_value == 2.0f);
+    }
+
+    drag(child, 885, 372, 18);
     snprintf(label, sizeof label, "dragging Output trim down sends %.2f dB", last_value);
     check(label, last_port == P_OUT_LEVEL && last_value < -6.0f && last_value > -8.0f);
-    drag(child, 633, 364, -18);
+    drag(child, 676, 364, -18);
     snprintf(label, sizeof label, "dragging Presence up sends %.2f", last_value);
     check(label, last_port == P_PRESENCE && fabsf(last_value - 6.0f) < 0.01f);
 

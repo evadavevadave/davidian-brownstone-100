@@ -5,6 +5,8 @@ declarations follow the LV2 headers, which are under the ISC license:
   src/lv2_core.h            follows lv2/core/lv2.h
   src/ui/ui_lv2.c           the "LV2 UI ABI" block follows lv2/ui/ui.h
   test/ui_check.c           the UI descriptor declaration follows lv2/ui/ui.h
+  test/ui_check_mac.m       the UI descriptor declaration follows lv2/ui/ui.h
+  test/load_check.c         the UI descriptor and idle interface follow lv2/ui/ui.h
 
 lv2/core/lv2.h:
   Copyright 2006-2020 David Robillard <d@drobilla.net>
