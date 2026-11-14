@@ -1,0 +1,27 @@
+Davidian Brownstone 100 - installing
+
+This zip holds the plugin in each format your system supports. Install the one your
+host (DAW) uses, then restart the host and rescan plugins.
+
+LV2   (folder LV2/brownstone100.lv2)
+  Windows: copy to %APPDATA%\LV2 (create it if needed) or %COMMONPROGRAMFILES%\LV2
+  macOS:   copy to ~/Library/Audio/Plug-Ins/LV2
+  Linux:   copy to ~/.lv2
+
+VST3  (folder VST3/brownstone100.vst3)
+  Windows: copy to C:\Program Files\Common Files\VST3
+  macOS:   copy to ~/Library/Audio/Plug-Ins/VST3
+  Linux:   copy to ~/.vst3
+
+Audio Unit (macOS only, folder AU/brownstone100.component)
+  macOS:   copy to ~/Library/Audio/Plug-Ins/Components
+           (Logic Pro, GarageBand and other AU hosts; it appears under "Davidian")
+
+macOS: the plugin isn't notarized by Apple, so macOS may block the downloaded files.
+After copying, run this once in Terminal for each format you installed:
+
+  xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/LV2/brownstone100.lv2
+  xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/VST3/brownstone100.vst3
+  xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/Components/brownstone100.component
+
+See README.md for the controls and what is modeled.

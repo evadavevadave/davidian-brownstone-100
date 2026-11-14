@@ -105,7 +105,7 @@ static void check_ui(const char* bundle, const char* ext)
     void* ui;
     void* widget = NULL;
     int i;
-    static const float vals[P_COUNT] = { 0, 0, 2, 0, 3, 4, 6, 3, 5, 5, 5, 5, 5, 1, 0, 0, 2 };
+    static const float vals[P_COUNT] = { 0, 0, 2, 0, 4, 6, 6, 3, 5, 5, 5, 5, 5, 1, 0, 0, 2 };
 
     snprintf(path, sizeof path, "%s/brownstone100_ui%s", bundle, ext);
     lib = dlopen(path, RTLD_NOW | RTLD_LOCAL);

@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Davidian
-# Builds and tests the plugin on Windows, macOS and Linux. Pushing a tag such as v1.0.0
-# also publishes a GitHub release with a ready-made zip for each platform.
+# Builds and tests the plugin (LV2, VST3 and, on macOS, Audio Unit) on Windows, macOS and
+# Linux. Pushing a tag such as v1.1.0 also publishes a GitHub release with a ready-made
+# zip for each platform.
 name: build
 
 on:
@@ -14,6 +15,11 @@ on:
 permissions:
   contents: read
 
+env:
+  # Plugin validator for VST3 and AU (Tracktion pluginval, GPL-3.0). Used on the build
+  # machines only; nothing from it goes into the release zips.
+  PLUGINVAL_URL: https://github.com/Tracktion/pluginval/releases/latest/download
+
 jobs:
   windows:
     runs-on: windows-latest
@@ -22,12 +28,31 @@ jobs:
       - name: Version
         shell: bash
         run: echo "VERSION=${GITHUB_REF_NAME//\//-}" >> "$GITHUB_ENV"
-      - name: Build and test
+      - name: Build and test LV2
         shell: cmd
         run: build.bat test
+      - name: Build VST3
+        shell: bash
+        run: |
+          cmake -S . -B build-cmake -A x64
+          cmake --build build-cmake --config Release --parallel
+          find build-cmake/bin -maxdepth 4 | sort
+      - name: Validate VST3 (pluginval)
+        shell: bash
+        run: |
+          curl -sSL -o pluginval.zip "$PLUGINVAL_URL/pluginval_Windows.zip"
+          7z x -y -opluginval pluginval.zip > /dev/null
+          ./pluginval/pluginval.exe --strictness-level 5 --validate-in-process --skip-gui-tests \
+            --validate build-cmake/bin/brownstone100.vst3
+      - name: Open the VST3 GUI (pluginval GUI tests)
+        shell: bash
+        continue-on-error: true
+        run: |
+          ./pluginval/pluginval.exe --strictness-level 5 --validate-in-process \
+            --validate build-cmake/bin/brownstone100.vst3
       - name: Package
-        shell: cmd
-        run: build.bat dist
+        shell: bash
+        run: bash ci/package.sh "$VERSION" windows-x64
       - uses: actions/upload-artifact@v5
         with:
           name: dist-windows-x64
@@ -44,28 +69,62 @@ jobs:
       - uses: actions/checkout@v5
       - name: Version
         run: echo "VERSION=${GITHUB_REF_NAME//\//-}" >> "$GITHUB_ENV"
-      - name: Build (universal arm64 + x86_64)
+      - name: Build LV2 (universal arm64 + x86_64)
         run: make VERSION="$VERSION"
+      - name: Build VST3 and AU (universal)
+        run: |
+          cmake -S . -B build-cmake -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-cmake --parallel
+          find build-cmake/bin -maxdepth 4 | sort
       - name: Check architectures
         run: |
-          lipo -info build/brownstone100.lv2/brownstone100.dylib
-          lipo -info build/brownstone100.lv2/brownstone100_ui.dylib
-          lipo build/brownstone100.lv2/brownstone100.dylib -verify_arch arm64 x86_64
-          lipo build/brownstone100.lv2/brownstone100_ui.dylib -verify_arch arm64 x86_64
+          for f in build/brownstone100.lv2/brownstone100.dylib build/brownstone100.lv2/brownstone100_ui.dylib \
+                   build-cmake/bin/brownstone100.vst3/Contents/MacOS/brownstone100 \
+                   build-cmake/bin/brownstone100.component/Contents/MacOS/brownstone100; do
+            lipo -info "$f"
+            lipo "$f" -verify_arch arm64 x86_64
+          done
       - name: Ad-hoc sign
-        run: codesign --force --sign - build/brownstone100.lv2/*.dylib
+        run: |
+          codesign --force --sign - build/brownstone100.lv2/*.dylib
+          codesign --force --deep --sign - build-cmake/bin/brownstone100.vst3
+          codesign --force --deep --sign - build-cmake/bin/brownstone100.component
       - name: Offline tests
         run: make test
-      - name: Load test (plugin)
+      - name: Load test (LV2 plugin)
         run: |
           cc -O2 -std=c99 test/load_check.c -o build-test/load_check
           ./build-test/load_check build/brownstone100.lv2 .dylib --no-ui
-      - name: GUI test (Cocoa)
+      - name: GUI test (LV2 Cocoa)
         run: |
           clang -O2 -x objective-c -fno-objc-arc test/ui_check_mac.m -framework Cocoa -o build-test/ui_check_mac
           ./build-test/ui_check_mac build/brownstone100.lv2 build-test/ui_window_macos.png
+      - name: Validate AU (auval)
+        run: |
+          mkdir -p ~/Library/Audio/Plug-Ins/Components
+          cp -R build-cmake/bin/brownstone100.component ~/Library/Audio/Plug-Ins/Components/
+          killall -9 AudioComponentRegistrar 2>/dev/null || true
+          sleep 3
+          auval -a | grep -i davidian
+          auval -strict -v aufx Bs1h Dvdn
+      - name: Validate VST3 and AU (pluginval)
+        run: |
+          curl -sSL -o pluginval.zip "$PLUGINVAL_URL/pluginval_macOS.zip"
+          unzip -q -o pluginval.zip -d pluginval
+          PV=pluginval/pluginval.app/Contents/MacOS/pluginval
+          "$PV" --strictness-level 5 --validate-in-process --skip-gui-tests \
+            --validate build-cmake/bin/brownstone100.vst3
+          "$PV" --strictness-level 5 --validate-in-process --skip-gui-tests \
+            --validate ~/Library/Audio/Plug-Ins/Components/brownstone100.component
+      - name: Open the VST3 and AU GUIs (pluginval GUI tests)
+        continue-on-error: true
+        run: |
+          PV=pluginval/pluginval.app/Contents/MacOS/pluginval
+          "$PV" --strictness-level 5 --validate-in-process --validate build-cmake/bin/brownstone100.vst3
+          "$PV" --strictness-level 5 --validate-in-process \
+            --validate ~/Library/Audio/Plug-Ins/Components/brownstone100.component
       - name: Package
-        run: make dist VERSION="$VERSION"
+        run: bash ci/package.sh "$VERSION" macos-universal
       - uses: actions/upload-artifact@v5
         with:
           name: dist-macos-universal
@@ -90,16 +149,23 @@ jobs:
       - name: Install build and test tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends build-essential libx11-dev xvfb xauth lilv-utils lv2-dev zip
-      - name: Build
+          sudo apt-get install -y --no-install-recommends build-essential cmake pkg-config \
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libgl1-mesa-dev libdbus-1-dev \
+            xvfb xauth lilv-utils lv2-dev zip unzip
+      - name: Build LV2
         run: make VERSION="$VERSION"
+      - name: Build VST3
+        run: |
+          cmake -S . -B build-cmake -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-cmake --parallel
+          find build-cmake/bin -maxdepth 4 | sort
       - name: Offline tests
         run: make test
-      - name: Load test (plugin and X11 GUI on a virtual display)
+      - name: Load test (LV2 plugin and X11 GUI on a virtual display)
         run: |
           cc -O2 -std=c99 test/load_check.c -o build-test/load_check -ldl -lm
           xvfb-run -a ./build-test/load_check build/brownstone100.lv2 .so
-      - name: Check the bundle with lilv
+      - name: Check the LV2 bundle with lilv
         run: |
           export LV2_PATH="$PWD/build"
           lv2info urn:davidian:brownstone-100 | tee build-test/lv2info.txt
@@ -107,8 +173,22 @@ jobs:
           grep -q "X11UI" build-test/lv2info.txt
           lv2apply -i build-test/test_input_di.wav -o build-test/lv2apply_out.wav urn:davidian:brownstone-100
           test -s build-test/lv2apply_out.wav
+      - name: Validate VST3 (pluginval, x64 only)
+        if: matrix.runner == 'ubuntu-22.04'
+        run: |
+          curl -sSL -o pluginval.zip "$PLUGINVAL_URL/pluginval_Linux.zip"
+          unzip -q -o pluginval.zip -d pluginval
+          chmod +x pluginval/pluginval
+          xvfb-run -a ./pluginval/pluginval --strictness-level 5 --validate-in-process --skip-gui-tests \
+            --validate build-cmake/bin/brownstone100.vst3
+      - name: Open the VST3 GUI (pluginval GUI tests, x64 only)
+        if: matrix.runner == 'ubuntu-22.04'
+        continue-on-error: true
+        run: |
+          xvfb-run -a -s "-screen 0 1280x1024x24 +extension GLX" ./pluginval/pluginval --strictness-level 5 \
+            --validate-in-process --validate build-cmake/bin/brownstone100.vst3
       - name: Package
-        run: make dist VERSION="$VERSION"
+        run: bash ci/package.sh "$VERSION" ${{ matrix.runner == 'ubuntu-22.04-arm' && 'linux-arm64' || 'linux-x64' }}
       - uses: actions/upload-artifact@v5
         with:
           name: dist-${{ matrix.runner == 'ubuntu-22.04-arm' && 'linux-arm64' || 'linux-x64' }}

@@ -194,6 +194,43 @@ int main(void)
         }
     }
 
+    /* Heavy drive must not create tones that aren't in the input (a failing solver in a
+     * feedback stage shows up as low-frequency junk). Feed a 220 Hz sine through the Lead
+     * channel at several Pre settings: everything below 200 Hz must stay small. */
+    {
+        const float pres[] = { 5, 6, 6.5f, 7, 7.5f, 8, 9, 10 };
+        double worst = 0;
+        for (size_t k = 0; k < sizeof pres / sizeof pres[0]; ++k) {
+            float ctl[P_COUNT] = { 0 };
+            ctl[P_CHANNEL] = 2; ctl[P_LEAD_PRE] = pres[k]; ctl[P_LEAD_POST] = 3;
+            ctl[P_LOW] = ctl[P_MID] = ctl[P_HIGH] = 5; ctl[P_PRESENCE] = ctl[P_RESONANCE] = 5;
+            for (int i = 0; i < N; ++i) in[i] = 0.1f * (float)sin(2 * M_PI * 220.0 * i / SR);
+            LV2_Handle h = d->instantiate(d, SR, "", NULL);
+            d->connect_port(h, P_IN, in); d->connect_port(h, P_OUT, out);
+            for (int p = 2; p < P_COUNT; ++p) d->connect_port(h, p, &ctl[p]);
+            d->activate(h);
+            d->run(h, N);
+            /* analyse the last second */
+            const float* y = out + N - (int)SR;
+            double fund = 0, spur = 0;
+            for (double f = 20; f <= 1000; f += 5) {
+                double re = 0, im = 0;
+                for (int i = 0; i < (int)SR; ++i) {
+                    re += y[i] * cos(2 * M_PI * f * i / SR);
+                    im += y[i] * sin(2 * M_PI * f * i / SR);
+                }
+                double m = sqrt(re * re + im * im);
+                if (fabs(f - 220) < 1) fund = m;
+                else if (f < 200) spur = fmax(spur, m);
+            }
+            worst = fmax(worst, spur / (fund + 1e-12));
+            d->cleanup(h);
+        }
+        printf("spurious low tones under drive: worst %.1f dB below the fundamental  %s\n",
+               -20 * log10(worst + 1e-12), worst < 0.03 ? "ok" : "SPURIOUS");
+        if (!(worst < 0.03)) fail = 1;
+    }
+
     /* Silence must stay silent (no self-oscillation in the NFB loop). */
     {
         float ctl[P_COUNT] = { 0 };

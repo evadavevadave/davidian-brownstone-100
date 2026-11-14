@@ -20,3 +20,4 @@
 
 # Documents
 *.pdf
+/build-cmake/

@@ -6,36 +6,44 @@
  * Signal chain (component designators refer to the original circuit):
  *
  *   Input (J37 high / J39 low) -> V1A (12AX7, R2 220k, R12 1.82k || C3 1uF)
- *   -> C6 .022 -> channel network:
- *        Lead   : R29 470k || C17 2.2n into R41||VR2 (Ultra Pre)
- *        Rhythm : R19 470k || C51 270p, R21 1M, VR1 (Clear Pre) + C27 180p bright,
- *                 S1C crunch switch
- *   -> R82 470k grid stopper -> V1B (R3 100k, R17 1.82k || C4 1uF, + C26 22uF on lead via K1A)
- *   -> C2 .022 -> R6 470k / R9 1M (+ R20 220k shunt on rhythm via K1B)
+ *   -> C6 .022 -> channel network (simulated as a circuit, linnet.h):
+ *        Lead   : R29 470k || C17 2.2n into R41 1M and VR2 Ultra Pre, with R40 1M and
+ *                 C19 1n across the pot's upper half
+ *        Rhythm : R19 470k || C51 270p, R21 1M, K4B shunt R23 39k + C63 .1u, VR1 Clean Pre
+ *                 with C27 180p bright; S1C Crunch shorts R75 so C10 470p bypasses R21
+ *   -> R82 470k grid stopper -> V1B (R3 100k, R17 1.82k || C4 1uF, + C26 22uF in Rhythm)
+ *   -> C2 .022 -> R6 470k / R9 1M (+ R20 220k shunt in Rhythm via K1B)
  *   -> V2A (R1 100k, R15 39k unbypassed "cold clipper")
  *   -> C1 .022, R11 330k || C48 1nF, R7 220k -> V2B (R4 220k, R13 1.82k || C5 1uF)
  *   -> R32 1M, C57 .022, R101 100k -> V5B (R96 220k, R102 2.2k unbypassed)
- *   -> R87 1M, C56 .022, R91 1M, R88 1M -> V5A (R86 100k, R93 2.2k unbypassed)
- *   -> C58 .022, R89 470k -> V3B cathode follower -> tone stack
- *        (R26 47k slope, C14 470p, C18/C21 .022, VR5 250k high, VR3 1M low, VR4 50k mid)
- *   -> VR7 Ultra Post / VR6 Clean Post -> V3A recovery (R5 68k, R14 3.3k || C61 4.7n)
- *   -> V4 long-tail phase inverter -> 4x 6L6GC push-pull -> T2
- *   -> negative feedback (R56 39k) with presence (VR9 + C62) and resonance (VR8 + C12).
+ *   -> R87 1M, C56 .022 -> V5A (R86 100k, R93 2.2k) with R88 1M plate-to-grid shunt
+ *      feedback and R91 1M to ground: a near-unity inverting stage
+ *   -> C58 .022, R89 470k -> tone stack input loaded by R24 33k and C59 .01 + R94 47k
+ *        (R28 47k slope, C14 470p || C60 100p, C18/C21 .022, VR5 250k high, VR3 1M low,
+ *         VR4 50k mid; output loaded by both Post pots)
+ *   -> VR7 Ultra Post / VR6 Clean Post -> V3B cathode follower -> loop (C11)
+ *   -> V3A recovery (R5 68k, R14 3.3k || C61 4.7n)
+ *   -> V4 long-tail phase inverter (tail R52 470 + R51 10k + R57 4.7k) -> 4x 6L6GC -> T2
+ *   -> negative feedback: R56 39k into the tail at R57 via C30, with Presence (C8 .1u,
+ *      C62 .033u, VR9 10k) and Resonance (C12 6.8n || VR8 1M).
  *
  * Triodes use the Koren 12AX7 model, solved against each stage's AC load line
- * into lookup tables at instantiate time. Nonlinear processing runs at 4x oversampling.
- * The power-amp feedback loop is solved implicitly (Newton) every sample.
+ * into lookup tables at instantiate time. Passive networks are simulated by modified
+ * nodal analysis with trapezoidal capacitors. Nonlinear processing runs at 4x
+ * oversampling. V5A's shunt feedback and the power-amp feedback loop are solved
+ * implicitly (Newton) every sample.
  *
  * Published methods used (equations re-implemented from the papers; no code copied):
  *   [1] N. Koren, "Improved vacuum tube models for SPICE simulations", Glass Audio 8(5), 1996.
  *       Triode equation and 12AX7 parameters (koren_12ax7).
- *   [2] D. T. Yeh and J. O. Smith, "Discretization of the '59 Fender Bassman tone stack",
- *       Proc. DAFx-06, Montreal, 2006. Analytic tone stack transfer function (tonestack_design).
+ *   [2] C.-W. Ho, A. E. Ruehli and P. A. Brennan, "The modified nodal approach to network
+ *       analysis", IEEE Trans. Circuits and Systems 22(6), 1975. Nodal analysis of the
+ *       passive networks (linnet.h).
  *   [3] R. Bristow-Johnson, "Cookbook formulae for audio EQ biquad filter coefficients"
  *       (Audio EQ Cookbook). Low-pass, high-pass and peaking biquads (bq_*).
  *   [4] V. Zavalishin, "The Art of VA Filter Design", Native Instruments, 2012-2020.
  *       Topology-preserving (trapezoidal) one-pole filters (OnePole) and the instantaneous
- *       response used to solve the feedback loop (power_run).
+ *       response used to solve the feedback loops (power_run, linnet_affine).
  * See README.md, "References".
  */
 
@@ -325,99 +333,182 @@ static inline double triode_run(Triode* t, double x)
     return t->table[i] + fr * (t->table[i + 1] - t->table[i]);
 }
 
-/* ------------------------------------------------- FMV tone stack (Yeh) */
-/* Third-order transfer function of the passive tone stack and its bilinear transform,
- * as derived by Yeh and Smith [2], with this amp's component values. */
 
-typedef struct {
-    double b[4], a[4];
-    double z[3];
-    double cur_t, cur_m, cur_l;
-    int    valid;
-} ToneStack;
-
-static void tonestack_design(ToneStack* ts, double treble, double mid, double bass, double fs)
+/* Static transfer of a stage (grid limiting + table), with no filters: for solvers. */
+static inline double triode_static(const Triode* t, double x)
 {
-    const double R1 = 250e3;  /* VR5 high   */
-    const double R2 = 1e6;    /* VR3 low    */
-    const double R3 = 50e3;   /* VR4 mid    */
-    const double R4 = 47e3;   /* R26 slope  */
-    const double C1 = 470e-12;/* C14        */
-    const double C2 = 22e-9;  /* C18        */
-    const double C3 = 22e-9;  /* C21        */
-
-    double t = clampd(treble, 0.0, 1.0);
-    double m = clampd(mid, 0.0, 1.0);
-    double l = taper_audio(bass);
-
-    double b1 = t * C1 * R1 + m * C3 * R3 + l * (C1 * R2 + C2 * R2) + (C1 * R3 + C2 * R3);
-    double b2 = t * (C1 * C2 * R1 * R4 + C1 * C3 * R1 * R4)
-              - m * m * (C1 * C3 * R3 * R3 + C2 * C3 * R3 * R3)
-              + m * (C1 * C3 * R1 * R3 + C1 * C3 * R3 * R3 + C2 * C3 * R3 * R3)
-              + l * (C1 * C2 * R1 * R2 + C1 * C2 * R2 * R4 + C1 * C3 * R2 * R4)
-              + l * m * (C1 * C3 * R2 * R3 + C2 * C3 * R2 * R3)
-              + (C1 * C2 * R1 * R3 + C1 * C2 * R3 * R4 + C1 * C3 * R3 * R4);
-    double b3 = l * m * (C1 * C2 * C3 * R1 * R2 * R3 + C1 * C2 * C3 * R2 * R3 * R4)
-              - m * m * (C1 * C2 * C3 * R1 * R3 * R3 + C1 * C2 * C3 * R3 * R3 * R4)
-              + m * (C1 * C2 * C3 * R1 * R3 * R3 + C1 * C2 * C3 * R3 * R3 * R4)
-              + t * C1 * C2 * C3 * R1 * R3 * R4
-              - t * m * C1 * C2 * C3 * R1 * R3 * R4
-              + t * l * C1 * C2 * C3 * R1 * R2 * R4;
-    double a0 = 1.0;
-    double a1 = (C1 * R1 + C1 * R3 + C2 * R3 + C2 * R4 + C3 * R4)
-              + m * C3 * R3 + l * (C1 * R2 + C2 * R2);
-    double a2 = m * (C1 * C3 * R1 * R3 - C2 * C3 * R3 * R4 + C1 * C3 * R3 * R3 + C2 * C3 * R3 * R3)
-              + l * m * (C1 * C3 * R2 * R3 + C2 * C3 * R2 * R3)
-              - m * m * (C1 * C3 * R3 * R3 + C2 * C3 * R3 * R3)
-              + l * (C1 * C2 * R2 * R4 + C1 * C2 * R1 * R2 + C1 * C3 * R2 * R4 + C2 * C3 * R2 * R4)
-              + (C1 * C2 * R1 * R4 + C1 * C3 * R1 * R4 + C1 * C2 * R3 * R4
-                 + C1 * C2 * R1 * R3 + C1 * C3 * R3 * R4 + C2 * C3 * R3 * R4);
-    double a3 = l * m * (C1 * C2 * C3 * R1 * R2 * R3 + C1 * C2 * C3 * R2 * R3 * R4)
-              - m * m * (C1 * C2 * C3 * R1 * R3 * R3 + C1 * C2 * C3 * R3 * R3 * R4)
-              + m * (C1 * C2 * C3 * R3 * R3 * R4 + C1 * C2 * C3 * R1 * R3 * R3
-                     - C1 * C2 * C3 * R1 * R3 * R4)
-              + l * C1 * C2 * C3 * R1 * R2 * R4
-              + C1 * C2 * C3 * R1 * R3 * R4;
-
-    /* bilinear transform, s = c (1 - z^-1) / (1 + z^-1) */
-    double c = 2.0 * fs, c2 = c * c, c3 = c2 * c;
-    double B0 = -b1 * c - b2 * c2 - b3 * c3;
-    double B1 = -b1 * c + b2 * c2 + 3.0 * b3 * c3;
-    double B2 =  b1 * c + b2 * c2 - 3.0 * b3 * c3;
-    double B3 =  b1 * c - b2 * c2 + b3 * c3;
-    double A0 = -a0 - a1 * c - a2 * c2 - a3 * c3;
-    double A1 = -3.0 * a0 - a1 * c + a2 * c2 + 3.0 * a3 * c3;
-    double A2 = -3.0 * a0 + a1 * c + a2 * c2 - 3.0 * a3 * c3;
-    double A3 = -a0 + a1 * c - a2 * c2 + a3 * c3;
-
-    ts->b[0] = B0 / A0; ts->b[1] = B1 / A0; ts->b[2] = B2 / A0; ts->b[3] = B3 / A0;
-    ts->a[0] = 1.0;     ts->a[1] = A1 / A0; ts->a[2] = A2 / A0; ts->a[3] = A3 / A0;
+    if (x > t->grid_thr) {
+        double k = t->grid_knee;
+        x = t->grid_thr + k * tanh((x - t->grid_thr) / k);
+    }
+    double pos = (x - t->lo) * t->inv_step;
+    if (pos <= 0.0) return t->table[0];
+    if (pos >= TABLE_N - 1) return t->table[TABLE_N - 1];
+    int    i  = (int)pos;
+    double fr = pos - i;
+    return t->table[i] + fr * (t->table[i + 1] - t->table[i]);
 }
 
-static inline double tonestack_run(ToneStack* ts, double x)
+/* ------------------------------------------- V5A: shunt-feedback gain stage */
+/* R87 1M feeds the grid, R91 1M goes to ground and R88 1M feeds the plate signal
+ * (after C58) back to the grid. The grid voltage solves
+ *     vg = a vin + b T(vg),  a = G87 / G,  b = G88 / G,  G = G87 + G88 + G91,
+ * where T is the stage's (inverting) plate transfer. T is decreasing, so the residual is
+ * strictly increasing and Newton converges from any start. */
+typedef struct {
+    Triode t;
+    double a, b;
+    double vg;
+} ShuntStage;
+
+static void shunt_setup(ShuntStage* s, double r_in, double r_fb, double r_gnd)
 {
-    double y  = ts->b[0] * x + ts->z[0];
-    ts->z[0]  = ts->b[1] * x - ts->a[1] * y + ts->z[1];
-    ts->z[1]  = ts->b[2] * x - ts->a[2] * y + ts->z[2];
-    ts->z[2]  = ts->b[3] * x - ts->a[3] * y;
-    return y;
+    double g_in = 1.0 / r_in, g_fb = 1.0 / r_fb, g = g_in + g_fb + 1.0 / r_gnd;
+    s->a = g_in / g;
+    s->b = g_fb / g;
+    s->vg = 0.0;
+}
+
+/* Safeguarded Newton: Newton steps inside a bracket that always holds the root, with a
+ * bisection whenever a step would leave it. Plain Newton can cycle on the clipped,
+ * piecewise-linear transfer, which shows up as spurious low tones under heavy drive. */
+static inline double shunt_run(ShuntStage* s, double vin)
+{
+    const double h = 0.01;
+    /* |T| is bounded by the table, so the root lies within this bracket. */
+    const double tmax = fmax(fabs(s->t.table[0]), fabs(s->t.table[TABLE_N - 1]));
+    double lo = s->a * vin - s->b * tmax - 1.0, hi = s->a * vin + s->b * tmax + 1.0;
+    double vg = clampd(s->vg, lo, hi);
+    for (int it = 0; it < 40; ++it) {
+        double f = vg - s->b * triode_static(&s->t, vg) - s->a * vin;
+        if (f > 0.0) hi = vg; else lo = vg;
+        if (fabs(f) < 1e-7 || hi - lo < 1e-7) break;
+        double dt = (triode_static(&s->t, vg + h) - triode_static(&s->t, vg - h)) / (2.0 * h);
+        double next = vg - f / (1.0 - s->b * dt);
+        vg = (next > lo && next < hi) ? next : 0.5 * (lo + hi);
+    }
+    s->vg = vg;
+    return triode_static(&s->t, vg);
+}
+
+/* ------------------------------------------------------- passive networks */
+/* Every passive network between the stages is simulated as a circuit (linnet.h) with
+ * the original component values, so pots, loading and source impedances interact as
+ * they do in the amp. */
+
+#include "linnet.h"
+
+/* Pot values from the original circuit */
+#define VR_PRE     1e6    /* VR1 Clean Pre, VR2 Ultra Pre */
+#define VR_POST    1e6    /* VR6 Clean Post, VR7 Ultra Post */
+#define VR_HIGH    250e3  /* VR5 */
+#define VR_LOW     1e6    /* VR3 */
+#define VR_MID     50e3   /* VR4 */
+#define VR_PRES    10e3   /* VR9 */
+#define VR_RES     1e6    /* VR8 */
+#define POT_MIN    50.0   /* end resistance of a pot track */
+
+static double pot_part(double frac, double total)
+{
+    return fmax(clampd(frac, 0.0, 1.0) * total, POT_MIN);
+}
+
+/* Input network after V1A: C6, then the Rhythm (K4A rest position) or Lead network.
+ * Node numbers for the front network. */
+enum { FN_P = 1, FN_S, FN_L2, FN_WL, FN_RR, FN_M, FN_D, FN_Q, FN_WR, FN_NODES = FN_WR };
+
+/* Source impedance of V1A's plate: R2 220k || ra. */
+#define V1A_ROUT 48e3
+
+static void front_build(LinNet* n, int channel, double pre, double fs)
+{
+    const int lead = channel == 2;
+    linnet_init(n, FN_NODES, fs);
+    linnet_source(n, FN_P, V1A_ROUT);
+    linnet_c(n, FN_P, FN_S, 22e-9);                      /* C6 */
+    /* Lead network (always hangs on C6; in Rhythm it is only a load) */
+    linnet_r(n, FN_S, FN_L2, 470e3);                     /* R29 */
+    linnet_c(n, FN_S, FN_L2, 2.2e-9);                    /* C17 */
+    linnet_r(n, FN_L2, 0, 1e6);                          /* R41 */
+    linnet_r(n, FN_L2, FN_WL, pot_part(1.0 - (lead ? pre : 0.5), VR_PRE)); /* VR2 upper */
+    linnet_r(n, FN_WL, 0, pot_part(lead ? pre : 0.5, VR_PRE));             /* VR2 lower */
+    linnet_r(n, FN_L2, FN_WL, 1e6);                      /* R40 */
+    linnet_c(n, FN_L2, FN_WL, 1e-9);                     /* C19 */
+    if (lead) {
+        /* K4A energized: the rhythm network is disconnected. Keep its nodes grounded
+         * through large resistors so the matrix stays regular. */
+        linnet_r(n, FN_RR, 0, 1e9); linnet_r(n, FN_M, 0, 1e9); linnet_r(n, FN_D, 0, 1e9);
+        linnet_r(n, FN_Q, 0, 1e9); linnet_r(n, FN_WR, 0, 1e9);
+        return;
+    }
+    /* Rhythm network (K4A and K4B at rest) */
+    linnet_r(n, FN_S, FN_RR, 470e3);                     /* R19 */
+    linnet_c(n, FN_S, FN_RR, 270e-12);                   /* C51 */
+    linnet_r(n, FN_RR, FN_D, 1e6);                       /* R21 */
+    linnet_c(n, FN_RR, FN_M, 470e-12);                   /* C10 */
+    linnet_r(n, FN_M, FN_D, channel == 1 ? 1.0 : 2.2e6); /* R75, shorted by S1C Crunch */
+    linnet_r(n, FN_D, FN_Q, 39e3);                       /* R23 via K4B */
+    linnet_c(n, FN_Q, 0, 0.1e-6);                        /* C63 */
+    linnet_r(n, FN_D, FN_WR, pot_part(1.0 - pre, VR_PRE)); /* VR1 upper */
+    linnet_r(n, FN_WR, 0, pot_part(pre, VR_PRE));          /* VR1 lower */
+    linnet_c(n, FN_D, FN_WR, 180e-12);                   /* C27 bright */
+}
+
+/* Tone stack, driven from V5A through C58 and R89 470k, loaded by R24 33k, C59 + R94 and
+ * the two Post pots. */
+enum { TN_P = 1, TN_N, TN_A, TN_B, TN_T, TN_W, TN_X, TN_Y, TN_Z, TN_NODES = TN_Z };
+
+/* V5A drives the stack from a low impedance: its shunt feedback lowers its output
+ * impedance well below R86. */
+#define V5A_ROUT 8e3
+
+static void stack_build(LinNet* n, double treble, double mid, double bass, double fs)
+{
+    linnet_init(n, TN_NODES, fs);
+    linnet_source(n, TN_P, V5A_ROUT);
+    linnet_c(n, TN_P, TN_N, 22e-9);                      /* C58 */
+    linnet_r(n, TN_N, 0, 1e6);                           /* R88 into the near-virtual-ground grid */
+    linnet_r(n, TN_N, TN_A, 470e3);                      /* R89 */
+    linnet_r(n, TN_A, 0, 33e3);                          /* R24 */
+    linnet_c(n, TN_A, TN_B, 10e-9);                      /* C59 */
+    linnet_r(n, TN_B, 0, 47e3);                          /* R94 */
+    linnet_c(n, TN_A, TN_T, 570e-12);                    /* C14 470p || C60 100p */
+    linnet_r(n, TN_T, TN_W, pot_part(1.0 - treble, VR_HIGH)); /* VR5 upper */
+    linnet_r(n, TN_W, TN_X, pot_part(treble, VR_HIGH));       /* VR5 lower */
+    linnet_r(n, TN_W, 0, VR_POST * 0.5);                 /* VR6 || VR7 */
+    linnet_r(n, TN_A, TN_Y, 47e3);                       /* R28 slope */
+    linnet_c(n, TN_Y, TN_X, 22e-9);                      /* C18 */
+    linnet_c(n, TN_Y, TN_Z, 22e-9);                      /* C21 */
+    linnet_r(n, TN_X, TN_Z, pot_part(taper_audio(bass), VR_LOW)); /* VR3 */
+    linnet_r(n, TN_Z, 0, pot_part(mid, VR_MID));                  /* VR4 */
+}
+
+/* Power-amp negative feedback: speaker -> R56 39k -> presence and resonance network ->
+ * C30 -> the phase inverter's tail (R57 4.7k, in parallel with R51 and the cathodes). */
+enum { NF_N = 1, NF_L, NF_M, NF_Q, NF_WP, NF_NODES = NF_WP };
+
+#define SPK_V     40.0   /* speaker volts per unit of normalized output (120 W into 8 ohms) */
+#define PI_TAIL   3.3e3  /* R57 4.7k || (R51 10k + R52 470 + cathodes) */
+
+static void nfb_build(LinNet* n, double presence, double resonance, double fs)
+{
+    linnet_init(n, NF_NODES, fs);
+    linnet_source(n, NF_N, 39e3);                        /* R56 */
+    linnet_c(n, NF_N, NF_L, 6.8e-9);                     /* C12 */
+    linnet_r(n, NF_N, NF_L, pot_part(taper_audio(resonance), VR_RES)); /* VR8 */
+    linnet_c(n, NF_L, NF_M, 22e-6);                      /* C30 */
+    linnet_r(n, NF_M, 0, PI_TAIL);
+    linnet_c(n, NF_N, NF_Q, 0.1e-6);                     /* C8 */
+    linnet_r(n, NF_Q, NF_WP, pot_part(presence, VR_PRES));       /* VR9, top to wiper */
+    linnet_r(n, NF_WP, 0, pot_part(1.0 - presence, VR_PRES));    /* VR9, wiper to ground */
+    linnet_c(n, NF_N, NF_WP, 33e-9);                     /* C62 */
 }
 
 /* ------------------------------------------------------------ power amp */
 
-#define PI_GAIN   25.0   /* long-tail pair differential gain        */
-#define PI_SWING  70.0   /* PI output swing limit (V)               */
-#define PWR_BIAS  45.0   /* 6L6 grid bias (V)                       */
-#define NFB_BETA  4.3    /* R56/R57 feedback, volts per unit output */
-
-/* Rhythm-channel input network: R19 470k || C51 270p, then R21 1M into VR1.
- * Without Crunch, K4B shunts that node to ground through R23 39k + C63 .1u.
- * HF gain = divider with C51 shorting R19; LF ratio relative to HF. */
-#define RHY_CLEAN_HF   (39e3 / (1e6 + 39e3))
-#define RHY_CLEAN_LF   ((39e3 / (470e3 + 1e6 + 39e3)) / RHY_CLEAN_HF)
-#define RHY_CRUNCH_HF  (1e6 / 2e6)
-#define RHY_CRUNCH_LF  ((1e6 / 2.47e6) / RHY_CRUNCH_HF)
-#define C51_ZERO_HZ    (1.0 / (2.0 * M_PI * 470e3 * 270e-12))
+#define PI_GAIN   25.0   /* long-tail pair gain, grid to each plate      */
+#define PI_SWING  70.0   /* PI output swing limit (V)                    */
+#define PWR_BIAS  45.0   /* 6L6GC grid bias (V)                          */
 
 /* PI + push-pull 6L6GC class AB transfer, normalized output. */
 static inline double power_h(double e)
@@ -433,38 +524,25 @@ static inline double power_h(double e)
 
 typedef struct {
     OnePole ot_hp, ot_lp;   /* output transformer bandwidth */
-    OnePole res_lp, pres_lp;/* feedback network */
-    double  kL, kH;         /* feedback shelf gains (resonance / presence) */
+    LinNet  nfb;            /* feedback network */
     double  e;              /* last solution, Newton start point */
 } PowerAmp;
 
+/* x: PI input (volts). Returns the normalized speaker signal. The loop through the
+ * transformer and the feedback network is solved implicitly each sample. */
 static double power_run(PowerAmp* p, double x)
 {
-    /* Affine response of the linear feedback chain: fb_net = a*h + b. */
+    /* Affine response of the transformer filters: y = a h + b */
     double G1 = p->ot_hp.G, s1 = p->ot_hp.s;
     double G2 = p->ot_lp.G, s2 = p->ot_lp.s;
-    double G3 = p->res_lp.G, s3 = p->res_lp.s;
-    double G4 = p->pres_lp.G, s4 = p->pres_lp.s;
+    double a = (1.0 - G1) * G2;
+    double b = -(1.0 - G1) * s1 * G2 + (1.0 - G2) * s2;
+    /* Feedback at the PI tail: v = k * (SPK_V y) + c0 */
+    double k, c0;
+    linnet_affine(&p->nfb, NF_M, &k, &c0);
+    double L = SPK_V * k * a, target = x - (SPK_V * k * b + c0);
 
-    /* OT high-pass: (1-G1) h - (1-G1) s1 */
-    double a = 1.0 - G1, b = -(1.0 - G1) * s1;
-    /* OT low-pass: G2 in + (1-G2) s2 */
-    a = G2 * a; b = G2 * b + (1.0 - G2) * s2;
-    /* resonance low shelf: in (1 + (kL-1) G3) + (kL-1)(1-G3) s3 */
-    {
-        double k = 1.0 + (p->kL - 1.0) * G3;
-        b = k * b + (p->kL - 1.0) * (1.0 - G3) * s3;
-        a = k * a;
-    }
-    /* presence high shelf: in (kH + (1-kH) G4) + (1-kH)(1-G4) s4 */
-    {
-        double k = p->kH + (1.0 - p->kH) * G4;
-        b = k * b + (1.0 - p->kH) * (1.0 - G4) * s4;
-        a = k * a;
-    }
-
-    /* Solve e = x - beta * (a h(e) + b) */
-    double L = NFB_BETA * a, target = x - NFB_BETA * b;
+    /* Solve e + L h(e) = target */
     double e = p->e;
     for (int it = 0; it < 6; ++it) {
         const double d = 1e-4;
@@ -477,16 +555,15 @@ static double power_run(PowerAmp* p, double x)
     }
     p->e = e;
 
-    /* Commit filter states with the solved output. */
-    double h   = power_h(e);
-    double y   = op_lp(&p->ot_lp, op_hp(&p->ot_hp, h));
-    double r   = shelf_low(&p->res_lp, p->kL, y);
-    double lp4 = op_lp(&p->pres_lp, r);
-    (void)lp4;
+    double y = op_lp(&p->ot_lp, op_hp(&p->ot_hp, power_h(e)));
+    linnet_step(&p->nfb, SPK_V * y, NF_M);
     return y;
 }
 
 /* ----------------------------------------------------------- plugin */
+
+#define CTRL_BLOCK 32   /* samples between control and network updates */
+#define OUT_SCALE  0.35 /* normalized speaker signal to digital full scale */
 
 typedef struct {
     const float* port[P_COUNT];
@@ -500,50 +577,36 @@ typedef struct {
     /* input */
     OnePole in_hp;          /* C15 coupling */
 
-    Triode  v1a, v1b, v2a, v2b, v5b, v5a, v3a;
+    Triode     v1a, v1b, v2a, v2b, v5b, v3a;
+    ShuntStage v5a;
 
-    /* channel network */
-    OnePole lead_shelf;     /* R29 || C17 into R41 || VR2 */
-    OnePole rhy_shelf;      /* R19 || C51 into R21 / VR1  */
-    OnePole rhy_bright;     /* C27 across VR1             */
-    double  rhy_lf, rhy_hf; /* K4B / S1C network gains    */
+    LinNet  front;          /* C6 and the channel networks */
+    LinNet  stack;          /* C58, R89 and the tone stack */
 
     /* interstage coupling */
-    OnePole c2_hp, c1_hp, c48_lp, c57_hp, c56_hp, c58_hp, c49_hp, loop_hp;
-
-    /* cathode follower + tone stack */
-    ToneStack ts;
+    OnePole c2_hp, c1_hp, c48_lp, c57_hp, c56_hp, loop_hp, c49_hp;
 
     PowerAmp pa;
 
     /* cabinet */
     CabSim cab;
 
-    /* smoothed controls */
-    double sm_pre, sm_post, sm_attn, sm_out, sm_in;
-    double sm_coef;
-
+    /* control values gliding toward their targets */
+    double g_pre, g_post, g_in, g_out;
+    double g_t, g_m, g_l, g_pres, g_res;
+    int    primed;
     int    channel;
-    double last_pres, last_res;
 } Brownstone;
 
 static void set_channel(Brownstone* s, int ch)
 {
     s->channel = ch;
-    /* K1A: lead grounds C26 (22uF) in parallel with C4 (1uF) */
-    triode_set_cathode_cap(&s->v1b, ch == 2 ? 23e-6 : 1e-6, s->fso);
-    /* rhythm shelf pole = C51 zero / LF ratio */
-    s->rhy_lf = ch == 0 ? RHY_CLEAN_LF : RHY_CRUNCH_LF;
-    s->rhy_hf = ch == 0 ? RHY_CLEAN_HF : RHY_CRUNCH_HF;
-    op_set(&s->rhy_shelf, C51_ZERO_HZ / s->rhy_lf, s->fso);
-}
-
-static void set_feedback(Brownstone* s, double pres, double res)
-{
-    s->pa.kH = 1.0 - 0.85 * clampd(pres, 0.0, 1.0);
-    s->pa.kL = 1.0 - 0.85 * clampd(res, 0.0, 1.0);
-    s->last_pres = pres;
-    s->last_res  = res;
+    /* K1A at rest (Rhythm) grounds C26 22uF beside C4 1uF; in Lead C26 sits in series with
+     * R18 47k, which leaves essentially C4 alone. */
+    triode_set_cathode_cap(&s->v1b, ch == 2 ? 1e-6 : 23e-6, s->fso);
+    front_build(&s->front, ch, s->g_pre, s->fso);
+    linnet_prepare(&s->front);
+    linnet_reset(&s->front);
 }
 
 static void build_aa(Biquad* f, double fc, double fs)
@@ -554,6 +617,10 @@ static void build_aa(Biquad* f, double fc, double fs)
         f[k].z1 = f[k].z2 = 0.0;
     }
 }
+
+/* Preamp supplies (the "V1" and "V2" nodes). */
+#define B_V1 300.0
+#define B_V2 280.0
 
 static LV2_Handle instantiate(const LV2_Descriptor* desc, double rate,
                               const char* path, const LV2_Feature* const* features)
@@ -571,53 +638,56 @@ static LV2_Handle instantiate(const LV2_Descriptor* desc, double rate,
 
     op_set(&s->in_hp, 1.0 / (2.0 * M_PI * 1e6 * 0.1e-6), fso); /* C15 .1u into R25 1M */
 
-    /*            supply Ra     next load Rk     bypass knee */
-    triode_build(&s->v1a, 330, 220e3, 1.0e6,  1.82e3, 1, 0.6);
-    triode_build(&s->v1b, 330, 100e3, 1.47e6, 1.82e3, 1, 0.35);
-    triode_build(&s->v2a, 330, 100e3, 330e3,  39e3,   0, 0.4);
-    triode_build(&s->v2b, 300, 220e3, 1.1e6,  1.82e3, 1, 0.45);
-    triode_build(&s->v5b, 300, 220e3, 2.0e6,  2.2e3,  0, 0.5);
-    triode_build(&s->v5a, 300, 100e3, 1.0e6,  2.2e3,  0, 0.3);
-    triode_build(&s->v3a, 300, 68e3,  1.1e6,  3.3e3,  1, 0.6);
+    /*              supply Ra     next load Rk      bypass knee
+     * V1A and V5B drive networks that are simulated with their source impedance, so
+     * their tables are unloaded (open-circuit plate voltage). */
+    triode_build(&s->v1a,   B_V1, 220e3, 1e12,   1.82e3, 1, 0.6);
+    triode_build(&s->v1b,   B_V1, 100e3, 1.47e6, 1.82e3, 1, 0.35);
+    triode_build(&s->v2a,   B_V1, 100e3, 330e3,  39e3,   0, 0.4);
+    triode_build(&s->v2b,   B_V2, 220e3, 1.1e6,  1.82e3, 1, 0.45);
+    triode_build(&s->v5b,   B_V2, 220e3, 1e12,   2.2e3,  0, 0.5);
+    triode_build(&s->v5a.t, B_V2, 100e3, 333e3,  2.2e3,  0, 0.3);
+    triode_build(&s->v3a,   B_V2, 68e3,  1.1e6,  3.3e3,  1, 0.6);
 
     triode_set_cathode_cap(&s->v1a, 1e-6, fso);
     triode_set_cathode_cap(&s->v2b, 1e-6, fso);
     triode_set_cathode_cap(&s->v3a, 4.7e-9, fso);
 
     /* Grid stopper x Miller capacitance low-passes */
-    triode_set_miller(&s->v1a, 22000.0, fso); /* R22 68k   */
-    triode_set_miller(&s->v1b, 3000.0,  fso); /* R82 470k  */
-    triode_set_miller(&s->v2b, 4700.0,  fso); /* R7 220k   */
+    triode_set_miller(&s->v1a, 22000.0, fso); /* R22 68k  */
+    triode_set_miller(&s->v1b, 3000.0,  fso); /* R82 470k */
+    triode_set_miller(&s->v2b, 4700.0,  fso); /* R7 220k  */
     triode_set_miller(&s->v5b, 28000.0, fso); /* R101 node */
-    triode_set_miller(&s->v5a, 2400.0,  fso); /* R88 1M    */
 
-    /* Channel networks */
-    op_set(&s->lead_shelf, 299.0, fso); /* zero 154 Hz, pole 299 Hz */
-    s->rhy_lf = RHY_CLEAN_LF;
-    s->rhy_hf = RHY_CLEAN_HF;
-    op_set(&s->rhy_shelf, C51_ZERO_HZ / s->rhy_lf, fso);
+    /* V5A: R87 1M plus V5B's output impedance (R96 220k || ra), R88 1M, R91 1M */
+    shunt_setup(&s->v5a, 1e6 + 124e3, 1e6, 1e6);
 
     /* Interstage coupling */
     op_set(&s->c2_hp,  1.0 / (2.0 * M_PI * 1.47e6 * 22e-9), fso);
     op_set(&s->c1_hp,  1.0 / (2.0 * M_PI * 330e3 * 22e-9), fso);
     op_set(&s->c48_lp, 1.0 / (2.0 * M_PI * 77e3 * 1e-9), fso);
     op_set(&s->c57_hp, 1.0 / (2.0 * M_PI * 1.1e6 * 22e-9), fso);
-    op_set(&s->c56_hp, 1.0 / (2.0 * M_PI * 2.0e6 * 22e-9), fso);
-    op_set(&s->c58_hp, 1.0 / (2.0 * M_PI * 1.0e6 * 22e-9), fso);
-    op_set(&s->c49_hp, 1.0 / (2.0 * M_PI * 1.1e6 * 22e-9), fso);
+    op_set(&s->c56_hp, 1.0 / (2.0 * M_PI * 1.1e6 * 22e-9), fso);
     op_set(&s->loop_hp, 1.0 / (2.0 * M_PI * 1.0e6 * 47e-9), fso); /* C11 */
+    op_set(&s->c49_hp, 1.0 / (2.0 * M_PI * 1.1e6 * 22e-9), fso);
 
     /* Power amp */
     op_set(&s->pa.ot_hp, 40.0, fso);
     op_set(&s->pa.ot_lp, 12000.0, fso);
-    op_set(&s->pa.res_lp, 110.0, fso);
-    op_set(&s->pa.pres_lp, 1500.0, fso);
-    set_feedback(s, 0.5, 0.5);
+
+    /* Networks are built at the first run(), once the control values are known. */
+    s->g_pre = 0.5;
+    s->g_t = s->g_m = s->g_l = s->g_pres = s->g_res = 0.5;
+    nfb_build(&s->pa.nfb, 0.5, 0.5, fso);
+    linnet_prepare(&s->pa.nfb);
+    stack_build(&s->stack, 0.5, 0.5, 0.5, fso);
+    linnet_prepare(&s->stack);
+    front_build(&s->front, 2, 0.5, fso);
+    linnet_prepare(&s->front);
 
     /* Cabinet simulation at base rate; run() selects the model from the ports. */
     cab_init(&s->cab, rate, 0);
 
-    s->sm_coef = 1.0 - exp(-1.0 / (0.015 * rate));
     s->channel = -1;
     return (LV2_Handle)s;
 }
@@ -641,18 +711,17 @@ static void reset_state(Brownstone* s)
         s->down[k].z1 = s->down[k].z2 = 0.0;
     }
     cab_reset(&s->cab);
-    Triode* tr[] = { &s->v1a, &s->v1b, &s->v2a, &s->v2b, &s->v5b, &s->v5a, &s->v3a };
+    Triode* tr[] = { &s->v1a, &s->v1b, &s->v2a, &s->v2b, &s->v5b, &s->v5a.t, &s->v3a };
     for (int k = 0; k < 7; ++k) tr[k]->cath.s = tr[k]->miller.s = 0.0;
-    OnePole* op[] = { &s->in_hp, &s->lead_shelf, &s->rhy_shelf, &s->rhy_bright,
-                      &s->c2_hp, &s->c1_hp, &s->c48_lp, &s->c57_hp, &s->c56_hp,
-                      &s->c58_hp, &s->c49_hp, &s->loop_hp, &s->pa.ot_hp,
-                      &s->pa.ot_lp, &s->pa.res_lp, &s->pa.pres_lp };
+    OnePole* op[] = { &s->in_hp, &s->c2_hp, &s->c1_hp, &s->c48_lp, &s->c57_hp, &s->c56_hp,
+                      &s->loop_hp, &s->c49_hp, &s->pa.ot_hp, &s->pa.ot_lp };
     for (size_t k = 0; k < sizeof(op) / sizeof(op[0]); ++k) op[k]->s = 0.0;
-    s->ts.z[0] = s->ts.z[1] = s->ts.z[2] = 0.0;
+    linnet_reset(&s->front);
+    linnet_reset(&s->stack);
+    linnet_reset(&s->pa.nfb);
+    s->v5a.vg = 0.0;
     s->pa.e = 0.0;
-    s->sm_pre = s->sm_post = s->sm_attn = 0.0;
-    s->sm_out = s->sm_in = 0.0;
-    s->ts.valid = 0;
+    s->primed = 0;
 }
 
 static void activate(LV2_Handle h)
@@ -665,27 +734,19 @@ static void activate(LV2_Handle h)
 #endif
 
 /* Process one oversampled sample through the amp. */
-static inline double amp_tick(Brownstone* s, double x, double pre, double post,
-                              double attn, int lead)
+static inline double amp_tick(Brownstone* s, double x, double post, int lead)
 {
     /* Input jack + V1A */
     x = op_hp(&s->in_hp, x);
     x = triode_run(&s->v1a, x); BS_PROBE(0, x);
 
-    /* Channel network after C6 */
-    if (lead) {
-        x = shelf_low(&s->lead_shelf, 500e3 / 970e3, x) * pre;
-    } else {
-        /* R19 || C51, R21, K4B shunt (clean) or S1C crunch */
-        x = shelf_low(&s->rhy_shelf, s->rhy_lf, x) * attn;
-        /* VR1 with C27 bright cap: HF bypasses the upper part of the pot */
-        x = shelf_low(&s->rhy_bright, pre, x);
-    }
+    /* C6 and the channel network (Pre pot inside) */
+    x = linnet_step(&s->front, x, lead ? FN_WL : FN_WR);
 
-    /* V1B */
+    /* R82 -> V1B */
     x = triode_run(&s->v1b, x); BS_PROBE(1, x);
 
-    /* C2, R6/R9 divider (+R20 shunt on rhythm) -> V2A */
+    /* C2, R6/R9 divider (+ R20 220k shunt in Rhythm, K1B at rest) -> V2A */
     x = op_hp(&s->c2_hp, x) * (lead ? 0.68 : 0.277);
     x = triode_run(&s->v2a, x); BS_PROBE(2, x);
 
@@ -697,23 +758,30 @@ static inline double amp_tick(Brownstone* s, double x, double pre, double post,
     x = op_hp(&s->c57_hp, x) * 0.087;
     x = triode_run(&s->v5b, x); BS_PROBE(4, x);
 
-    /* R87, C56, R91, R88 -> V5A */
-    x = op_hp(&s->c56_hp, x) * 0.49;
-    x = triode_run(&s->v5a, x); BS_PROBE(5, x);
+    /* R87, C56 -> V5A with R88 shunt feedback */
+    x = op_hp(&s->c56_hp, x);
+    x = shunt_run(&s->v5a, x); BS_PROBE(5, x);
 
-    /* C58, R89 -> V3B cathode follower: grid current limits positive swing */
-    x = op_hp(&s->c58_hp, x);
-    if (x > 0.0) x = 60.0 * tanh(x / 60.0);
-    else         x = 150.0 * tanh(x / 150.0);
-
-    /* Tone stack -> post pot -> FX loop -> V3A */
-    x = tonestack_run(&s->ts, x) * post; BS_PROBE(6, x);
+    /* C58, R89 -> tone stack -> Post pot -> V3B cathode follower -> loop (C11) -> V3A */
+    x = linnet_step(&s->stack, x, TN_W) * post; BS_PROBE(6, x);
     x = op_hp(&s->loop_hp, x);
     x = triode_run(&s->v3a, x); BS_PROBE(7, x);
 
     /* C49 -> phase inverter -> power amp with NFB */
     x = op_hp(&s->c49_hp, x);
     return power_run(&s->pa, x);
+}
+
+/* Moves v toward target by at most a fraction of the distance (per control block). */
+static int glide(double* v, double target, double k)
+{
+    double d = target - *v;
+    if (fabs(d) < 1e-6) {
+        if (*v != target) { *v = target; return 1; }
+        return 0;
+    }
+    *v += d * k;
+    return 1;
 }
 
 static void run(LV2_Handle h, uint32_t n)
@@ -729,84 +797,80 @@ static void run(LV2_Handle h, uint32_t n)
 #endif
 
     int ch = (int)lrint(clampd(port_val(s, P_CHANNEL, 2.0), 0.0, 2.0));
-    if (ch != s->channel) {
-        if (s->channel >= 0) {
-            /* clear coupling states to avoid a thump when the relays switch */
-            s->lead_shelf.s = s->rhy_shelf.s = s->rhy_bright.s = 0.0;
-        }
-        set_channel(s, ch);
-    }
     int lead = ch == 2;
 
-    double pre_knob  = port_val(s, lead ? P_LEAD_PRE : P_RHY_PRE, 5.0) / 10.0;
-    double post_knob = port_val(s, lead ? P_LEAD_POST : P_RHY_POST, 5.0) / 10.0;
-    double pre_t     = taper_pre(pre_knob);
-    double post_t    = taper_pre(post_knob);
-    double attn_t    = s->rhy_hf;
-    double in_t      = pow(10.0, clampd(port_val(s, P_IN_TRIM, 0.0), -24.0, 24.0) / 20.0)
-                     * (port_val(s, P_INPUT_LOW, 0.0) > 0.5 ? 0.5 : 1.0);
-    double out_t     = pow(10.0, clampd(port_val(s, P_OUT_LEVEL, 0.0), -60.0, 12.0) / 20.0);
+    double pre_t  = taper_pre(port_val(s, lead ? P_LEAD_PRE : P_RHY_PRE, 5.0) / 10.0);
+    double post_t = taper_audio(port_val(s, lead ? P_LEAD_POST : P_RHY_POST, 5.0) / 10.0);
+    double in_t   = pow(10.0, clampd(port_val(s, P_IN_TRIM, 0.0), -24.0, 24.0) / 20.0)
+                  * (port_val(s, P_INPUT_LOW, 0.0) > 0.5 ? 0.5 : 1.0);
+    double out_t  = pow(10.0, clampd(port_val(s, P_OUT_LEVEL, 0.0), -60.0, 12.0) / 20.0);
+    double t_t    = clampd(port_val(s, P_HIGH, 5.0) / 10.0, 0.0, 1.0);
+    double m_t    = clampd(port_val(s, P_MID, 5.0) / 10.0, 0.0, 1.0);
+    double l_t    = clampd(port_val(s, P_LOW, 5.0) / 10.0, 0.0, 1.0);
+    double pres_t = clampd(port_val(s, P_PRESENCE, 5.0) / 10.0, 0.0, 1.0);
+    double res_t  = clampd(port_val(s, P_RESONANCE, 5.0) / 10.0, 0.0, 1.0);
     int    cab       = port_val(s, P_CAB, 1.0) > 0.5;
     int    cab_model = (int)lrint(clampd(port_val(s, P_CAB_MODEL, 0.0), 0.0, CAB_MODELS - 1));
     cab_select(&s->cab, cab ? cab_model : CAB_OFF);
 
-    if (!s->ts.valid) {
-        s->sm_pre = pre_t; s->sm_post = post_t; s->sm_attn = attn_t;
-        s->sm_in = in_t; s->sm_out = out_t;
+    if (!s->primed) {
+        /* First block after activation: start at the targets. */
+        s->g_pre = pre_t; s->g_post = post_t; s->g_in = in_t; s->g_out = out_t;
+        s->g_t = t_t; s->g_m = m_t; s->g_l = l_t; s->g_pres = pres_t; s->g_res = res_t;
+        stack_build(&s->stack, t_t, m_t, l_t, s->fso);
+        linnet_prepare(&s->stack);
+        nfb_build(&s->pa.nfb, pres_t, res_t, s->fso);
+        linnet_prepare(&s->pa.nfb);
+        s->channel = -1;
+        s->primed = 1;
+    }
+    if (ch != s->channel) {
+        s->g_pre = pre_t; /* a channel switch selects another pot */
+        set_channel(s, ch);
     }
 
-    /* Rhythm bright cap corner follows the pot position (upper leg of VR1). */
-    {
-        /* H = Rl(1 + s Ru C)/(Rl + Ru + s Rl Ru C): DC gain = pre, pole at 1/((Rl||Ru) C) */
-        double rl = fmax(s->sm_pre * 1e6, 1.0), ru = fmax((1.0 - s->sm_pre) * 1e6, 1.0);
-        op_set(&s->rhy_bright, 1.0 / (2.0 * M_PI * (rl * ru / (rl + ru)) * 180e-12), s->fso);
-    }
+    /* Glide time constant of about 15 ms, applied once per control block. */
+    const double k = 1.0 - exp(-(double)CTRL_BLOCK / (0.015 * s->fs));
 
-    /* Tone stack: glide toward targets once per block. */
-    {
-        double tt = clampd(port_val(s, P_HIGH, 5.0) / 10.0, 0.0, 1.0);
-        double tm = clampd(port_val(s, P_MID, 5.0) / 10.0, 0.0, 1.0);
-        double tl = clampd(port_val(s, P_LOW, 5.0) / 10.0, 0.0, 1.0);
-        if (!s->ts.valid) {
-            s->ts.cur_t = tt; s->ts.cur_m = tm; s->ts.cur_l = tl;
-            tonestack_design(&s->ts, tt, tm, tl, s->fso);
-            s->ts.valid = 1;
-        } else if (fabs(tt - s->ts.cur_t) + fabs(tm - s->ts.cur_m) + fabs(tl - s->ts.cur_l) > 1e-5) {
-            double k = fmin(1.0, n / (0.03 * s->fs));
-            s->ts.cur_t += (tt - s->ts.cur_t) * k;
-            s->ts.cur_m += (tm - s->ts.cur_m) * k;
-            s->ts.cur_l += (tl - s->ts.cur_l) * k;
-            tonestack_design(&s->ts, s->ts.cur_t, s->ts.cur_m, s->ts.cur_l, s->fso);
+    for (uint32_t i0 = 0; i0 < n; i0 += CTRL_BLOCK) {
+        const uint32_t m = n - i0 < CTRL_BLOCK ? n - i0 : CTRL_BLOCK;
+
+        if (glide(&s->g_pre, pre_t, k)) {
+            front_build(&s->front, ch, s->g_pre, s->fso);
+            linnet_prepare(&s->front);
         }
-    }
-
-    {
-        double pres = clampd(port_val(s, P_PRESENCE, 5.0) / 10.0, 0.0, 1.0);
-        double res  = clampd(port_val(s, P_RESONANCE, 5.0) / 10.0, 0.0, 1.0);
-        if (pres != s->last_pres || res != s->last_res) set_feedback(s, pres, res);
-    }
-
-    const double c = s->sm_coef;
-    for (uint32_t i = 0; i < n; ++i) {
-        s->sm_pre  += (pre_t - s->sm_pre) * c;
-        s->sm_post += (post_t - s->sm_post) * c;
-        s->sm_attn += (attn_t - s->sm_attn) * c;
-        s->sm_in   += (in_t - s->sm_in) * c;
-        s->sm_out  += (out_t - s->sm_out) * c;
-
-        double x = (double)in[i] * s->sm_in;
-        double acc = 0.0;
-        for (int o = 0; o < OS; ++o) {
-            double u = (o == 0) ? x * OS : 0.0;
-            for (int k = 0; k < AA_STAGES; ++k) u = bq_run(&s->up[k], u);
-            double y = amp_tick(s, u, s->sm_pre, s->sm_post, s->sm_attn, lead);
-            for (int k = 0; k < AA_STAGES; ++k) y = bq_run(&s->down[k], y);
-            if (o == OS - 1) acc = y;
+        {
+            int a = glide(&s->g_t, t_t, k), b = glide(&s->g_m, m_t, k), c = glide(&s->g_l, l_t, k);
+            if (a || b || c) {
+                stack_build(&s->stack, s->g_t, s->g_m, s->g_l, s->fso);
+                linnet_prepare(&s->stack);
+            }
         }
+        {
+            int a = glide(&s->g_pres, pres_t, k), b = glide(&s->g_res, res_t, k);
+            if (a || b) {
+                nfb_build(&s->pa.nfb, s->g_pres, s->g_res, s->fso);
+                linnet_prepare(&s->pa.nfb);
+            }
+        }
+        glide(&s->g_post, post_t, k);
+        glide(&s->g_in, in_t, k);
+        glide(&s->g_out, out_t, k);
 
-        double y = cab_run(&s->cab, acc * 0.35) * s->sm_out;
-        if (!(y == y)) { reset_state(s); y = 0.0; } /* NaN guard */
-        out[i] = (float)y;
+        for (uint32_t i = i0; i < i0 + m; ++i) {
+            double x = (double)in[i] * s->g_in;
+            double acc = 0.0;
+            for (int o = 0; o < OS; ++o) {
+                double u = (o == 0) ? x * OS : 0.0;
+                for (int q = 0; q < AA_STAGES; ++q) u = bq_run(&s->up[q], u);
+                double y = amp_tick(s, u, s->g_post, lead);
+                for (int q = 0; q < AA_STAGES; ++q) y = bq_run(&s->down[q], y);
+                if (o == OS - 1) acc = y;
+            }
+            double y = cab_run(&s->cab, acc * OUT_SCALE) * s->g_out;
+            if (!(y == y)) { reset_state(s); y = 0.0; } /* NaN guard */
+            out[i] = (float)y;
+        }
     }
 
 #ifdef BS_HAVE_SSE
@@ -835,7 +899,15 @@ static const LV2_Descriptor descriptor = {
     extension_data
 };
 
+/* The DSP entry points, for wrappers in other plugin formats. */
+const LV2_Descriptor* brownstone_dsp_descriptor(void)
+{
+    return &descriptor;
+}
+
+#ifndef BROWNSTONE_NO_LV2_EXPORT
 LV2_SYMBOL_EXPORT const LV2_Descriptor* lv2_descriptor(uint32_t index)
 {
     return index == 0 ? &descriptor : NULL;
 }
+#endif

@@ -165,7 +165,7 @@ int main(int argc, char** argv)
 
     /* The host sends every control port's value first (the TTL defaults). */
     {
-        static const float vals[P_COUNT] = { 0, 0, 2, 0, 3, 4, 6, 3, 5, 5, 5, 5, 5, 1, 0, 0, 0 };
+        static const float vals[P_COUNT] = { 0, 0, 2, 0, 4, 6, 6, 3, 5, 5, 5, 5, 5, 1, 0, 0, 0 };
         for (i = P_CHANNEL; i < P_COUNT; ++i)
             d->port_event(ui, (uint32_t)i, sizeof(float), 0, &vals[i]);
     }
@@ -184,7 +184,7 @@ int main(int argc, char** argv)
     SendMessageA(child, WM_LBUTTONDBLCLK, MK_LBUTTON, xy(211, 150));
     SendMessageA(child, WM_LBUTTONUP, 0, xy(211, 150));
     snprintf(label, sizeof label, "double-click resets Rhythm Post to %.2f", last_value);
-    check(label, last_port == P_RHY_POST && fabsf(last_value - 4.0f) < 1e-4f);
+    check(label, last_port == P_RHY_POST && fabsf(last_value - 6.0f) < 1e-4f);
 
     click(child, 230, 376 - 18);
     check("top of the channel switch selects Rhythm", last_port == P_CHANNEL && last_value == 0.0f);

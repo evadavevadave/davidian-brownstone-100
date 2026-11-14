@@ -20,7 +20,7 @@
 #define PANEL_H 470
 
 #define PANEL_NAME     "BROWNSTONE 100"
-#define PANEL_SUBTITLE "TWO-CHANNEL 100 WATT VALVE AMPLIFIER - FIVE 12AX7 GAIN STAGES - 6L6 POWER"
+#define PANEL_SUBTITLE "TWO-CHANNEL 120 WATT VALVE AMPLIFIER - FIVE 12AX7 GAIN STAGES - 6L6 POWER"
 
 /* W_SELECT: a stepped rotary selector whose pointer aims at the chosen name in a list. */
 enum { W_KNOB, W_TRIM, W_SWITCH, W_FOOT, W_SELECT };
@@ -42,8 +42,8 @@ typedef struct {
 } Widget;
 
 static const Widget WIDGETS[] = {
-    { W_KNOB, P_RHY_PRE, 81, 150, 30, 0, 10, 3, "PRE", "RHYTHM PRE GAIN", "0", "10", {0}, 0 },
-    { W_KNOB, P_RHY_POST, 211, 150, 30, 0, 10, 4, "POST", "RHYTHM POST GAIN", "0", "10", {0}, 0 },
+    { W_KNOB, P_RHY_PRE, 81, 150, 30, 0, 10, 4, "PRE", "RHYTHM PRE GAIN", "0", "10", {0}, 0 },
+    { W_KNOB, P_RHY_POST, 211, 150, 30, 0, 10, 6, "POST", "RHYTHM POST GAIN", "0", "10", {0}, 0 },
     { W_KNOB, P_LEAD_PRE, 351, 150, 30, 0, 10, 6, "PRE", "LEAD PRE GAIN", "0", "10", {0}, 0 },
     { W_KNOB, P_LEAD_POST, 481, 150, 30, 0, 10, 3, "POST", "LEAD POST GAIN", "0", "10", {0}, 0 },
     { W_KNOB, P_LOW, 621, 150, 30, 0, 10, 5, "LOW", "LOW", "0", "10", {0}, 0 },
