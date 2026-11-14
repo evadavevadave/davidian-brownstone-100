@@ -31,12 +31,24 @@ jobs:
       - name: Build and test LV2
         shell: cmd
         run: build.bat test
-      - name: Build VST3
-        shell: bash
+      # DPF's OpenGL code builds with MinGW-w64 on Windows, not with Visual Studio.
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            git
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+      - name: Build VST3 (MinGW-w64)
+        shell: msys2 {0}
         run: |
-          cmake -S . -B build-cmake -A x64
-          cmake --build build-cmake --config Release --parallel
+          cmake -S . -B build-cmake -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-cmake --parallel
           find build-cmake/bin -maxdepth 4 | sort
+          # the plugin must not need MinGW's runtime DLLs at run time
+          objdump -p build-cmake/bin/brownstone100.vst3/Contents/x86_64-win/brownstone100.vst3 | grep "DLL Name"
       - name: Validate VST3 (pluginval)
         shell: bash
         run: |

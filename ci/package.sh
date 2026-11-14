@@ -22,7 +22,7 @@ if [ -d build-cmake/bin/brownstone100.component ]; then
   mkdir -p "$out/AU"
   cp -R build-cmake/bin/brownstone100.component "$out/AU/"
 fi
-cp README.md LICENSE LICENSE-LV2 docs/INSTALL.txt "$out/"
+cp README.md LICENSE LICENSE-LV2 LICENSE-DPF docs/INSTALL.txt "$out/"
 
 cd build/dist
 if command -v zip >/dev/null 2>&1; then

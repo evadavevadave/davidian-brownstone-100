@@ -22,6 +22,12 @@ set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
 project(brownstone100 VERSION 1.1.0 LANGUAGES C CXX)
 
+# MinGW (the Windows toolchain DPF's OpenGL UI supports): link the GCC runtime statically,
+# so the plugin doesn't depend on libgcc / libstdc++ / libwinpthread DLLs.
+if(MINGW)
+  add_link_options(-static -static-libgcc -static-libstdc++)
+endif()
+
 set(DPF_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(DPF_LIBRARIES OFF CACHE BOOL "" FORCE)
 
